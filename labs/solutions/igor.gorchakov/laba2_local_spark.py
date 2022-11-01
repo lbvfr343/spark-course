@@ -24,7 +24,7 @@ from pyspark.sql import SparkSession
 import pyspark.sql.functions as f_
 
 from pyspark.ml.feature import HashingTF, IDF, Tokenizer, StopWordsRemover #,VectorAssembler
-from pyspark.sql.types import FloatType # from pyspark.sql.types import FloatType, DoubleType, DecimalType, StringType, ArrayType 
+from pyspark.sql.types import FloatType
 from pyspark.sql.window import Window
 from pyspark.ml import Pipeline
 import json
@@ -42,7 +42,6 @@ df.count()
 courses_list = [[23126, u'en', u'Compass - powerful SASS library that makes your life easier'], [21617, u'en', u'Preparing for the AP* Computer Science A Exam \u2014 Part 2'], [16627, u'es', u'Aprende Excel: Nivel Intermedio by Alfonso Rinsche'], [11556, u'es', u'Aprendizaje Colaborativo by UNID Universidad Interamericana para el Desarrollo'], [16704, u'ru', u'\u041f\u0440\u043e\u0433\u0440\u0430\u043c\u043c\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u043d\u0430 Lazarus'], [13702, u'ru', u'\u041c\u0430\u0442\u0435\u043c\u0430\u0442\u0438\u0447\u0435\u0441\u043a\u0430\u044f \u044d\u043a\u043e\u043d\u043e\u043c\u0438\u043a\u0430']]
 
 pc_ids=[x[0] for x in courses_list]
-# set([x[1] for x in courses_list])
 langList = ['en','es','ru']
 # with open(path, "r", encoding = "ANSI") as f:
 #     data = json.load(f)
@@ -72,12 +71,10 @@ stop_words = list(set(StopWordsRemover.loadDefaultStopWords("english") + StopWor
 len(stop_words)
 
 #%%
-# Загружаем данные 
 data = spark.read.json(path)
 # data = spark.read.json('/labs/slaba02/DO_record_per_line.json')
 data.show(10)
 
-# Чистом данные
 data2 = data.select(*data.columns ,regexp_clear.alias('desc2')).drop('desc')
 data2.show(10)
 
