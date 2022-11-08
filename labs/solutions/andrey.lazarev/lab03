@@ -1,0 +1,3747 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "import os\n",
+    "import sys\n",
+    "os.environ[\"PYSPARK_PYTHON\"]='/opt/anaconda/envs/bd9/bin/python'\n",
+    "os.environ[\"SPARK_HOME\"]='/usr/hdp/current/spark2-client'\n",
+    "os.environ[\"PYSPARK_SUBMIT_ARGS\"]='--num-executors 5 --executor-memory 5g --executor-cores 3 --driver-memory 5g pyspark-shell'\n",
+    "\n",
+    "spark_home = os.environ.get('SPARK_HOME', None)\n",
+    "\n",
+    "sys.path.insert(0, os.path.join(spark_home, 'python'))\n",
+    "sys.path.insert(0, os.path.join(spark_home, 'python/lib/py4j-0.10.7-src.zip'))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [],
+   "source": [
+    "from pyspark import SparkConf\n",
+    "from pyspark.sql import SparkSession\n",
+    "\n",
+    "conf = SparkConf()\n",
+    "conf.set(\"spark.app.name\", \"lab03\") \n",
+    "conf.set(\"spark.sql.shuffle.partitions\", 20)\n",
+    "\n",
+    "spark = SparkSession.builder.config(conf=conf).getOrCreate()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "from pyspark.ml.classification import GBTClassifier, RandomForestClassifier\n",
+    "from pyspark.sql.functions import col, desc, pandas_udf, PandasUDFType, udf, regexp_replace, when, asc, lit, broadcast\n",
+    "from pyspark.sql.types import StructType, IntegerType, StructField, DateType, StringType, TimestampType, FloatType, ArrayType\n",
+    "from pyspark.ml.evaluation import BinaryClassificationEvaluator\n",
+    "from pyspark.ml.feature import VectorAssembler, StringIndexer, OneHotEncoder"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 115,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "train_schema = StructType(fields = [\n",
+    "    StructField('user_id', IntegerType()),\n",
+    "    StructField('item_id', IntegerType()),\n",
+    "    StructField('purchase', IntegerType()),\n",
+    "])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 116,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "data_train = spark.read.option(\"header\",\"true\") \\\n",
+    "                        .schema(train_schema) \\\n",
+    "                        .csv('/labs/slaba03/laba03_train.csv')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 117,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+-------+--------+\n",
+      "|user_id|item_id|purchase|\n",
+      "+-------+-------+--------+\n",
+      "|   1654|  74107|       0|\n",
+      "|   1654|  89249|       0|\n",
+      "|   1654|  99982|       0|\n",
+      "|   1654|  89901|       0|\n",
+      "|   1654| 100504|       0|\n",
+      "+-------+-------+--------+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_train = data_train.na.fill(0)\n",
+    "data_train.show(10)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 118,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "test_schema = StructType(fields = [\n",
+    "    StructField('user_id', IntegerType()),\n",
+    "    StructField('item_id', IntegerType()),\n",
+    "])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 119,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "data_test = spark.read.option(\"header\",\"true\") \\\n",
+    "                        .schema(test_schema) \\\n",
+    "                        .csv('/labs/slaba03/laba03_test.csv')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 120,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+-------+\n",
+      "|user_id|item_id|\n",
+      "+-------+-------+\n",
+      "|   1654|  94814|\n",
+      "|   1654|  93629|\n",
+      "|   1654|   9980|\n",
+      "|   1654|  95099|\n",
+      "|   1654|  11265|\n",
+      "+-------+-------+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_test.show(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 121,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "items_schema = StructType(fields = [\n",
+    "    StructField('item_id', IntegerType()),\n",
+    "    StructField('channel_id', IntegerType()),\n",
+    "    StructField('datetime_availability_start', StringType()),\n",
+    "    StructField('datetime_availability_stop', StringType()),\n",
+    "    StructField('datetime_show_start', StringType()),\n",
+    "    StructField('datetime_show_stop', StringType()),\n",
+    "    StructField('content_type', IntegerType()),\n",
+    "    StructField('title', StringType()),\n",
+    "    StructField('year', FloatType()),\n",
+    "    StructField('genres', StringType()),\n",
+    "    StructField('region_id', IntegerType()),\n",
+    "])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 122,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [],
+   "source": [
+    "data_items = spark.read.option(\"header\",\"true\") \\\n",
+    "                        .option(\"sep\", \"\\t\") \\\n",
+    "                        .schema(items_schema) \\\n",
+    "                        .csv('/labs/slaba03/laba03_items.csv')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 123,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+----------+---------------------------+--------------------------+-------------------+------------------+------------+--------------------+------+-------+---------+\n",
+      "|item_id|channel_id|datetime_availability_start|datetime_availability_stop|datetime_show_start|datetime_show_stop|content_type|               title|  year| genres|region_id|\n",
+      "+-------+----------+---------------------------+--------------------------+-------------------+------------------+------------+--------------------+------+-------+---------+\n",
+      "|  65667|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|на пробах только ...|2013.0|Эротика|        0|\n",
+      "|  65669|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|скуби ду: эротиче...|2011.0|Эротика|        0|\n",
+      "|  65668|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|горячие девочки д...|2011.0|Эротика|        0|\n",
+      "|  65671|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|соблазнительницы ...|2011.0|Эротика|        0|\n",
+      "|  65670|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|секретные секс-ма...|2010.0|Эротика|        0|\n",
+      "+-------+----------+---------------------------+--------------------------+-------------------+------------------+------------+--------------------+------+-------+---------+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_items = data_items.na.fill(0)\n",
+    "data_items.show(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 124,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "StructType(List(StructField(item_id,IntegerType,true),StructField(channel_id,IntegerType,true),StructField(datetime_availability_start,StringType,true),StructField(datetime_availability_stop,StringType,true),StructField(datetime_show_start,StringType,true),StructField(datetime_show_stop,StringType,true),StructField(content_type,IntegerType,true),StructField(title,StringType,true),StructField(year,FloatType,false),StructField(genres,StringType,true),StructField(region_id,IntegerType,true)))"
+      ]
+     },
+     "execution_count": 124,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "data_items.schema"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 125,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "views_schema = StructType(fields = [\n",
+    "    StructField('user_id', IntegerType()),\n",
+    "    StructField('item_id', IntegerType()),\n",
+    "    StructField('ts_start', IntegerType()),\n",
+    "    StructField('ts_end', IntegerType()),\n",
+    "    StructField('item_type', StringType()),\n",
+    "])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 126,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "data_views = spark.read.option(\"header\",\"true\") \\\n",
+    "                    .schema(views_schema) \\\n",
+    "                    .csv('/labs/slaba03/laba03_views_programmes.csv')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 127,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+-------+----------+----------+---------+\n",
+      "|user_id|item_id|  ts_start|    ts_end|item_type|\n",
+      "+-------+-------+----------+----------+---------+\n",
+      "|      0|7101053|1491409931|1491411600|     live|\n",
+      "|      0|7101054|1491412481|1491451571|     live|\n",
+      "|      0|7101054|1491411640|1491412481|     live|\n",
+      "|      0|6184414|1486191290|1486191640|     live|\n",
+      "|    257|4436877|1490628499|1490630256|     live|\n",
+      "+-------+-------+----------+----------+---------+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_views = data_views.na.fill(0)\n",
+    "data_views.show(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 128,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+------------------+-----------------+------------------+--------------------+---------+\n",
+      "|summary|           user_id|          item_id|          ts_start|              ts_end|item_type|\n",
+      "+-------+------------------+-----------------+------------------+--------------------+---------+\n",
+      "|  count|          20845607|         20845607|          20845607|            20845607| 20845607|\n",
+      "|   mean| 843101.3175987152| 6814314.24027048|1.49020644555557E9|1.4902099667723315E9|     null|\n",
+      "| stddev|62833.218456075265|753861.9254537829| 2192980.211751445|   2192944.005817249|     null|\n",
+      "|    min|                 0|           -99996|        1485907219|          1485915673|     live|\n",
+      "|    25%|            805172|          6545947|        1488468074|          1488471193|     null|\n",
+      "|    50%|            850748|          6799520|        1490175289|          1490178721|     null|\n",
+      "|    75%|            891235|          7336145|        1492458177|          1492461073|     null|\n",
+      "|    max|            941970|          7610659|        1493859272|          1493859606|      pvr|\n",
+      "+-------+------------------+-----------------+------------------+--------------------+---------+\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_views.summary().show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 129,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+---------+\n",
+      "|item_type|\n",
+      "+---------+\n",
+      "|      pvr|\n",
+      "|     live|\n",
+      "+---------+\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_views.select('item_type').distinct().show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 130,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+-------+----------+----------+---------+\n",
+      "|user_id|item_id|  ts_start|    ts_end|item_type|\n",
+      "+-------+-------+----------+----------+---------+\n",
+      "|      0|7101053|1491409931|1491411600|        1|\n",
+      "|      0|7101054|1491412481|1491451571|        1|\n",
+      "|      0|7101054|1491411640|1491412481|        1|\n",
+      "|      0|6184414|1486191290|1486191640|        1|\n",
+      "|    257|4436877|1490628499|1490630256|        1|\n",
+      "+-------+-------+----------+----------+---------+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_views = data_views.withColumn('item_type', regexp_replace('item_type', 'live', '1'))\n",
+    "data_views = data_views.withColumn('item_type', regexp_replace('item_type', 'pvr', '0').cast(IntegerType()))\n",
+    "\n",
+    "data_views.show(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 131,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+-------+----------+----------+---------+--------------+\n",
+      "|user_id|item_id|  ts_start|    ts_end|item_type|avg(item_type)|\n",
+      "+-------+-------+----------+----------+---------+--------------+\n",
+      "| 508880|6688384|1489584900|1489588500|        1|           1.0|\n",
+      "| 508880|6599570|1488911700|1488912294|        1|           1.0|\n",
+      "| 508880|6691613|1489605634|1489606500|        1|           1.0|\n",
+      "| 508880|6651555|1488913200|1488915300|        1|           1.0|\n",
+      "| 508880|6691615|1489607100|1489608000|        1|           1.0|\n",
+      "+-------+-------+----------+----------+---------+--------------+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_views = data_views.join(data_views.groupBy('user_id').mean('item_type'), on='user_id', how='left')\n",
+    "data_views.show(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 132,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+-------+----------+----------+---------+--------------+-----------+\n",
+      "|user_id|item_id|  ts_start|    ts_end|item_type|avg(item_type)|ts_duration|\n",
+      "+-------+-------+----------+----------+---------+--------------+-----------+\n",
+      "| 508880|6688384|1489584900|1489588500|        1|           1.0|       3600|\n",
+      "| 508880|6599570|1488911700|1488912294|        1|           1.0|        594|\n",
+      "| 508880|6691613|1489605634|1489606500|        1|           1.0|        866|\n",
+      "| 508880|6651555|1488913200|1488915300|        1|           1.0|       2100|\n",
+      "| 508880|6691615|1489607100|1489608000|        1|           1.0|        900|\n",
+      "+-------+-------+----------+----------+---------+--------------+-----------+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_views = data_views.withColumn('ts_duration', data_views['ts_end'] - data_views['ts_start'])\n",
+    "data_views.show(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 133,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+-------+----------+----------+---------+--------------+-----------+--------------------+\n",
+      "|user_id|item_id|  ts_start|    ts_end|item_type|avg(item_type)|ts_duration|    ts_duration_norm|\n",
+      "+-------+-------+----------+----------+---------+--------------+-----------+--------------------+\n",
+      "| 508880|6688384|1489584900|1489588500|        1|           1.0|       3600| 0.03838239527470067|\n",
+      "| 508880|6599570|1488911700|1488912294|        1|           1.0|        594|0.006333095220325611|\n",
+      "| 508880|6691613|1489605634|1489606500|        1|           1.0|        866| 0.00923309841885855|\n",
+      "| 508880|6651555|1488913200|1488915300|        1|           1.0|       2100|0.022389730576908726|\n",
+      "| 508880|6691615|1489607100|1489608000|        1|           1.0|        900|0.009595598818675168|\n",
+      "+-------+-------+----------+----------+---------+--------------+-----------+--------------------+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_views = data_views.withColumn('ts_duration_norm', data_views['ts_duration']/ \\\n",
+    "                                   data_views.agg({'ts_duration': 'max'}).first()['max(ts_duration)'])\n",
+    "data_views.show(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 134,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+-------+----------+----------+---------+--------------+-----------+--------------------+------------------+------------------+\n",
+      "|user_id|item_id|  ts_start|    ts_end|item_type|avg(item_type)|ts_duration|    ts_duration_norm|     ts_start_norm|       ts_end_norm|\n",
+      "+-------+-------+----------+----------+---------+--------------+-----------+--------------------+------------------+------------------+\n",
+      "| 508880|6688384|1489584900|1489588500|        1|           1.0|       3600| 0.03838239527470067|0.9971387050439648|0.9971408919667917|\n",
+      "| 508880|6599570|1488911700|1488912294|        1|           1.0|        594|0.006333095220325611|0.9966880601856317|0.9966882349719282|\n",
+      "| 508880|6691613|1489605634|1489606500|        1|           1.0|        866| 0.00923309841885855|0.9971525845307335|0.9971529412918606|\n",
+      "| 508880|6651555|1488913200|1488915300|        1|           1.0|       2100|0.022389730576908726|0.9966890642962787|0.9966902472092146|\n",
+      "| 508880|6691615|1489607100|1489608000|        1|           1.0|        900|0.009595598818675168| 0.997153565881539| 0.997153945402283|\n",
+      "+-------+-------+----------+----------+---------+--------------+-----------+--------------------+------------------+------------------+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_views = data_views.withColumn('ts_start_norm', data_views['ts_start']/ \\\n",
+    "                                   data_views.agg({'ts_start': 'max'}).first()['max(ts_start)'])\n",
+    "data_views = data_views.withColumn('ts_end_norm', data_views['ts_end']/ \\\n",
+    "                                   data_views.agg({'ts_end': 'max'}).first()['max(ts_end)'])\n",
+    "data_views.show(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 137,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "data_train = data_train.join(data_views.select('item_id', 'item_type').dropDuplicates(['item_id']), \\\n",
+    "                             on='item_id', how='left')\n",
+    "data_test = data_test.join(data_views.select('item_id', 'item_type').dropDuplicates(['item_id']), \\\n",
+    "                             on='item_id', how='left')\n",
+    "data_train = data_train.na.fill(0)\n",
+    "data_test = data_test.na.fill(0)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 139,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+-------+--------+---------+\n",
+      "|item_id|user_id|purchase|item_type|\n",
+      "+-------+-------+--------+---------+\n",
+      "|    326| 778082|       0|        0|\n",
+      "|    326| 778182|       0|        0|\n",
+      "|    326| 778808|       0|        0|\n",
+      "|    326| 778899|       0|        0|\n",
+      "|    326| 779484|       0|        0|\n",
+      "+-------+-------+--------+---------+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_train.show(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 140,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+-------+---------+\n",
+      "|item_id|user_id|item_type|\n",
+      "+-------+-------+---------+\n",
+      "|    326| 520446|        0|\n",
+      "|    326| 523860|        0|\n",
+      "|    326| 566701|        0|\n",
+      "|    326| 619378|        0|\n",
+      "|    326| 632495|        0|\n",
+      "+-------+-------+---------+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_test.show(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 141,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+-----------------+----------+---------------------------+--------------------------+-------------------+------------------+--------------------+--------------------+------------------+--------------------+---------+\n",
+      "|summary|          item_id|channel_id|datetime_availability_start|datetime_availability_stop|datetime_show_start|datetime_show_stop|        content_type|               title|              year|              genres|region_id|\n",
+      "+-------+-----------------+----------+---------------------------+--------------------------+-------------------+------------------+--------------------+--------------------+------------------+--------------------+---------+\n",
+      "|  count|           635568|    635568|                       3704|                      3704|                  0|                 0|              635568|                3704|            635568|                3671|   635568|\n",
+      "|   mean|389.7514852856028|       0.0|                       null|                      null|               null|              null|0.005827857916068776|               693.8|11.672599942099035|                null|      0.0|\n",
+      "| stddev|5757.621379594575|       0.0|                       null|                      null|               null|              null| 0.07611769245242163|   937.3989012154857|  152.543189516896|                null|      0.0|\n",
+      "|    min|                0|         0|       1970-01-01T00:00:00Z|      2017-08-21T00:00:00Z|               null|              null|                   0|\"тайна \"\"волчьей ...|               0.0|Анимация,Для взро...|        0|\n",
+      "|    25%|                0|         0|                       null|                      null|               null|              null|                   0|                13.0|               0.0|                null|        0|\n",
+      "|    50%|                0|         0|                       null|                      null|               null|              null|                   0|                51.0|               0.0|                null|        0|\n",
+      "|    75%|                0|         0|                       null|                      null|               null|              null|                   0|              1408.0|               0.0|                null|        0|\n",
+      "|    max|           104165|         0|       2017-01-01T00:00:00Z|      2099-12-31T21:00:00Z|               null|              null|                   1|       ёлки лохматые|            2017.0|Юмористические,Пе...|        0|\n",
+      "+-------+-----------------+----------+---------------------------+--------------------------+-------------------+------------------+--------------------+--------------------+------------------+--------------------+---------+\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_items.summary().show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 142,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "data_items = data_items.withColumn('year', data_items['year'].cast(IntegerType()))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 143,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": false
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+----+\n",
+      "|year|\n",
+      "+----+\n",
+      "|2009|\n",
+      "|1959|\n",
+      "|2011|\n",
+      "|1990|\n",
+      "|2014|\n",
+      "+----+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_items.select('year').distinct().show(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 144,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+---------------------------+\n",
+      "|datetime_availability_start|\n",
+      "+---------------------------+\n",
+      "|       1970-01-01T00:00:00Z|\n",
+      "|       2017-01-01T00:00:00Z|\n",
+      "+---------------------------+\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_items.select('datetime_availability_start').distinct().show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 145,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "44071"
+      ]
+     },
+     "execution_count": 145,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "data_items.select('datetime_availability_stop').distinct().count()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 146,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+----------+---------------------------+--------------------------+-------------------+------------------+------------+--------------------+----+--------------------+---------+-------------+\n",
+      "|item_id|channel_id|datetime_availability_start|datetime_availability_stop|datetime_show_start|datetime_show_stop|content_type|               title|year|              genres|region_id|datetime_stop|\n",
+      "+-------+----------+---------------------------+--------------------------+-------------------+------------------+------------+--------------------+----+--------------------+---------+-------------+\n",
+      "|  65667|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|на пробах только ...|2013|             Эротика|        0|       1263.0|\n",
+      "|  65669|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|скуби ду: эротиче...|2011|             Эротика|        0|       1263.0|\n",
+      "|  65668|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|горячие девочки д...|2011|             Эротика|        0|       1263.0|\n",
+      "|  65671|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|соблазнительницы ...|2011|             Эротика|        0|       1263.0|\n",
+      "|  65670|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|секретные секс-ма...|2010|             Эротика|        0|       1263.0|\n",
+      "|  65809|         0|       1970-01-01T00:00:00Z|      2099-12-31T21:00:00Z|               null|              null|           1|      все о мужчинах|2016|             Комедии|        0|          0.0|\n",
+      "|  65810|         0|       1970-01-01T00:00:00Z|      2099-12-31T21:00:00Z|               null|              null|           1|8 лучших свиданий...|2016|   Комедии,Мелодрамы|        0|          0.0|\n",
+      "|    326|         0|       1970-01-01T00:00:00Z|      2099-12-31T21:00:00Z|               null|              null|           1|            византия|2012|Ужасы,Триллеры,Др...|        0|          0.0|\n",
+      "|    336|         0|       1970-01-01T00:00:00Z|      2099-12-31T21:00:00Z|               null|              null|           1|девственники, бер...|2012|Ужасы,Комедии,Фан...|        0|          0.0|\n",
+      "|    357|         0|       1970-01-01T00:00:00Z|      2099-12-31T21:00:00Z|               null|              null|           1|   8 первых свиданий|2012|Комедии,Мелодрамы...|        0|          0.0|\n",
+      "|    396|         0|       1970-01-01T00:00:00Z|      2099-12-31T21:00:00Z|               null|              null|           1|        предчувствие|2007|Детективы,Триллер...|        0|          0.0|\n",
+      "|    400|         0|       1970-01-01T00:00:00Z|      2099-12-31T21:00:00Z|               null|              null|           1|          путь воина|2010|Фантастика,Боевик...|        0|          0.0|\n",
+      "|    423|         0|       1970-01-01T00:00:00Z|      2099-12-31T21:00:00Z|               null|              null|           1|    список контактов|2008|Детективы,Триллер...|        0|          0.0|\n",
+      "|    430|         0|       1970-01-01T00:00:00Z|      2099-12-31T21:00:00Z|               null|              null|           1|               сыщик|2007|Детективы,Триллер...|        0|          0.0|\n",
+      "|    449|         0|       1970-01-01T00:00:00Z|      2099-12-31T21:00:00Z|               null|              null|           1|             туристы|2006|Ужасы,Детективы,Т...|        0|          0.0|\n",
+      "|    453|         0|       1970-01-01T00:00:00Z|      2099-12-31T21:00:00Z|               null|              null|           1|      уроки вождения|2006|Комедии,Драмы,Зар...|        0|          0.0|\n",
+      "|    478|         0|       1970-01-01T00:00:00Z|      2099-12-31T21:00:00Z|               null|              null|           1|             апостол|2008|Военные,Боевики,Наши|        0|          0.0|\n",
+      "|    495|         0|       1970-01-01T00:00:00Z|      2099-12-31T21:00:00Z|               null|              null|           1|     железный рыцарь|2010|Приключения,Истор...|        0|          0.0|\n",
+      "|    505|         0|       1970-01-01T00:00:00Z|      2099-12-31T21:00:00Z|               null|              null|           1|че: часть первая....|2008|Военные,Драмы,Ист...|        0|          0.0|\n",
+      "|    540|         0|       1970-01-01T00:00:00Z|      2099-12-31T21:00:00Z|               null|              null|           1|   мой парень – псих|2012|Комедии,Драмы,Мел...|        0|          0.0|\n",
+      "+-------+----------+---------------------------+--------------------------+-------------------+------------------+------------+--------------------+----+--------------------+---------+-------------+\n",
+      "only showing top 20 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "datetime_index = StringIndexer(inputCol=\"datetime_availability_stop\", outputCol=\"datetime_stop\", handleInvalid='skip')\n",
+    "data_items = datetime_index.fit(data_items).transform(data_items)\n",
+    "data_items.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 147,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+----------+---------------------------+--------------------------+-------------------+------------------+------------+--------------------+----+-------+---------+-------------+-------------------+\n",
+      "|item_id|channel_id|datetime_availability_start|datetime_availability_stop|datetime_show_start|datetime_show_stop|content_type|               title|year| genres|region_id|datetime_stop| datetime_stop_norm|\n",
+      "+-------+----------+---------------------------+--------------------------+-------------------+------------------+------------+--------------------+----+-------+---------+-------------+-------------------+\n",
+      "|  65667|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|на пробах только ...|2013|Эротика|        0|       1263.0|0.03234977716305517|\n",
+      "|  65669|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|скуби ду: эротиче...|2011|Эротика|        0|       1263.0|0.03234977716305517|\n",
+      "|  65668|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|горячие девочки д...|2011|Эротика|        0|       1263.0|0.03234977716305517|\n",
+      "|  65671|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|соблазнительницы ...|2011|Эротика|        0|       1263.0|0.03234977716305517|\n",
+      "|  65670|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|секретные секс-ма...|2010|Эротика|        0|       1263.0|0.03234977716305517|\n",
+      "+-------+----------+---------------------------+--------------------------+-------------------+------------------+------------+--------------------+----+-------+---------+-------------+-------------------+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_items = data_items.withColumn('datetime_stop_norm', data_items['datetime_stop']/ \\\n",
+    "                                   data_items.agg({'datetime_stop': 'max'}).first()['max(datetime_stop)'])\n",
+    "data_items.show(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 148,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+----------+---------------------------+--------------------------+-------------------+------------------+------------+--------------------+----+-------+---------+-------------+-------------------+--------------+\n",
+      "|item_id|channel_id|datetime_availability_start|datetime_availability_stop|datetime_show_start|datetime_show_stop|content_type|               title|year| genres|region_id|datetime_stop| datetime_stop_norm|datetime_start|\n",
+      "+-------+----------+---------------------------+--------------------------+-------------------+------------------+------------+--------------------+----+-------+---------+-------------+-------------------+--------------+\n",
+      "|  65667|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|на пробах только ...|2013|Эротика|        0|       1263.0|0.03234977716305517|             0|\n",
+      "|  65669|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|скуби ду: эротиче...|2011|Эротика|        0|       1263.0|0.03234977716305517|             0|\n",
+      "|  65668|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|горячие девочки д...|2011|Эротика|        0|       1263.0|0.03234977716305517|             0|\n",
+      "|  65671|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|соблазнительницы ...|2011|Эротика|        0|       1263.0|0.03234977716305517|             0|\n",
+      "|  65670|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|секретные секс-ма...|2010|Эротика|        0|       1263.0|0.03234977716305517|             0|\n",
+      "+-------+----------+---------------------------+--------------------------+-------------------+------------------+------------+--------------------+----+-------+---------+-------------+-------------------+--------------+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_items = data_items.select('*', when(col('datetime_availability_start').contains(\"2017-01-01T00:00:00Z\"), 1).otherwise(0).alias('datetime_start'))\n",
+    "data_items.show(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 149,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "1077"
+      ]
+     },
+     "execution_count": 149,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "data_items.select('genres').distinct().count()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 150,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "['Эротика',\n",
+       " 'Эротика',\n",
+       " 'Эротика',\n",
+       " 'Эротика',\n",
+       " 'Эротика',\n",
+       " 'Комедии',\n",
+       " 'Комедии,Мелодрамы',\n",
+       " 'Ужасы,Триллеры,Драмы,Фантастика,Зарубежные',\n",
+       " 'Ужасы,Комедии,Фантастика,Зарубежные',\n",
+       " 'Комедии,Мелодрамы,Наши',\n",
+       " 'Детективы,Триллеры,Драмы,Фантастика,Зарубежные',\n",
+       " 'Фантастика,Боевики,Зарубежные',\n",
+       " 'Детективы,Триллеры,Драмы,Криминал,Зарубежные',\n",
+       " 'Детективы,Триллеры,Драмы,Зарубежные',\n",
+       " 'Ужасы,Детективы,Триллеры,Зарубежные',\n",
+       " 'Комедии,Драмы,Зарубежные',\n",
+       " 'Военные,Боевики,Наши',\n",
+       " 'Приключения,Исторические,Мелодрамы,Боевики,Зарубежные',\n",
+       " 'Военные,Драмы,Исторические,Зарубежные',\n",
+       " 'Комедии,Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Семейные,Документальные,Зарубежные',\n",
+       " 'Триллеры,Драмы,Зарубежные',\n",
+       " 'Ужасы,Детективы,Триллеры,Зарубежные',\n",
+       " 'Ужасы,Боевики,Зарубежные',\n",
+       " 'Зарубежные',\n",
+       " 'Триллеры,Драмы,Криминал,Зарубежные',\n",
+       " 'Приключения,Комедии,Боевики,Зарубежные',\n",
+       " 'Мультфильмы,Мультсериалы,Детские,Наши',\n",
+       " 'Ужасы,Зарубежные',\n",
+       " 'Приключения,Мультсериалы,Детские,Зарубежные',\n",
+       " 'Комедии,Наши',\n",
+       " 'Мультфильмы,Полнометражные,Детские,Зарубежные',\n",
+       " 'Драмы,Боевики,Криминал,Зарубежные',\n",
+       " 'Мультфильмы,Полнометражные,Детские,Зарубежные',\n",
+       " 'Драмы,Криминал,Наши',\n",
+       " 'Ужасы,Триллеры,Фантастика,Зарубежные',\n",
+       " 'Семейные,Комедии,Мелодрамы,Наши',\n",
+       " 'Приключения,Триллеры,Боевики,Зарубежные',\n",
+       " 'Приключения,Драмы,Фантастика,Боевики,Зарубежные',\n",
+       " 'Триллеры,Боевики,Криминал,Зарубежные',\n",
+       " 'Ужасы,Детективы,Триллеры,Зарубежные',\n",
+       " 'Триллеры,Боевики,Зарубежные',\n",
+       " 'Семейные,Комедии,Криминал,Зарубежные',\n",
+       " 'Триллеры,Драмы,Боевики,Криминал,Зарубежные',\n",
+       " 'Детективы,Триллеры,Криминал,Зарубежные',\n",
+       " 'Комедии,Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Драмы,Наши,Спортивные',\n",
+       " 'Комедии,Наши',\n",
+       " 'Приключения,Детективы,Триллеры,Наши',\n",
+       " 'Ужасы,Триллеры,Фантастика,Зарубежные',\n",
+       " 'Триллеры,Драмы,Боевики,Криминал,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Фантастика,Зарубежные',\n",
+       " 'Драмы,Зарубежные',\n",
+       " 'Драмы,Мелодрамы,Наши',\n",
+       " 'Зарубежные',\n",
+       " 'Триллеры,Боевики,Криминал,Зарубежные',\n",
+       " 'Триллеры,Боевики,Криминал,Зарубежные',\n",
+       " 'Ужасы,Детективы,Зарубежные',\n",
+       " 'Ужасы,Зарубежные',\n",
+       " 'Триллеры,Фантастика,Мелодрамы,Боевики,Зарубежные',\n",
+       " 'Триллеры,Драмы,Боевики,Криминал,Зарубежные',\n",
+       " 'Детективы,Триллеры,Боевики,Криминал,Зарубежные',\n",
+       " 'Детективы,Триллеры,Драмы,Мелодрамы,Наши',\n",
+       " 'Познавательные',\n",
+       " 'Приключения,Комедии,Наши',\n",
+       " 'Развлекательные',\n",
+       " 'Игры',\n",
+       " 'Анимация,Для взрослых,Наши',\n",
+       " 'Триллеры,Драмы,Наши',\n",
+       " 'Комедии,Наши,Мюзиклы',\n",
+       " 'Драмы,Наши',\n",
+       " 'Ужасы,Приключения,Комедии,Триллеры,Фантастика,Боевики,Зарубежные',\n",
+       " 'Драмы,Исторические,Фантастика,Зарубежные',\n",
+       " 'Триллеры,Фантастика,Боевики,Зарубежные',\n",
+       " 'Комедии,Наши',\n",
+       " 'Приключения,Комедии,Наши',\n",
+       " 'Семейные,Приключения,Фантастика,Зарубежные',\n",
+       " 'Комедии,Драмы,Наши',\n",
+       " 'Ужасы,Триллеры,Драмы,Фантастика,Зарубежные',\n",
+       " 'Мультфильмы,Комедии,Полнометражные,Детские,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Драмы,Зарубежные',\n",
+       " 'Комедии,Наши',\n",
+       " 'Ужасы,Триллеры,Драмы,Зарубежные',\n",
+       " 'Семейные,Комедии,Фильмы,Детские,Наши',\n",
+       " 'Драмы,Фантастика,Боевики,Зарубежные',\n",
+       " 'Триллеры,Драмы,Боевики,Криминал,Зарубежные',\n",
+       " 'Фантастика,Наши',\n",
+       " 'Драмы,Мелодрамы,Наши',\n",
+       " 'Приключения,Драмы,Фантастика,Мелодрамы,Наши',\n",
+       " 'Драмы,Исторические,Зарубежные',\n",
+       " 'Ужасы,Детективы,Триллеры,Зарубежные',\n",
+       " 'Фантастика,Боевики,Зарубежные',\n",
+       " 'Приключения,Комедии,Мелодрамы,Криминал,Наши',\n",
+       " 'Комедии,Триллеры,Фантастика,Боевики,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Драмы,Зарубежные',\n",
+       " 'Ужасы,Зарубежные',\n",
+       " 'Семейные,Приключения,Комедии,Фильмы,Фантастика,Детские,Наши',\n",
+       " 'Семейные,Фантастика,Наши',\n",
+       " 'Семейные,Приключения,Наши,Мюзиклы',\n",
+       " 'Игры',\n",
+       " 'Семейные,Комедии,Фильмы,Фантастика,Мелодрамы,Детские,Наши',\n",
+       " 'Приключения,Боевики,Зарубежные',\n",
+       " 'Ужасы,Зарубежные',\n",
+       " 'Семейные,Приключения,Комедии,Фильмы,Фантастика,Детские,Наши',\n",
+       " 'Военные,Драмы,Мелодрамы,Наши',\n",
+       " 'Триллеры,Боевики,Зарубежные',\n",
+       " 'Ужасы,Детективы,Зарубежные',\n",
+       " 'Триллеры,Драмы,Криминал,Зарубежные',\n",
+       " 'Комедии,Фантастика,Боевики,Зарубежные',\n",
+       " 'Комедии,Мелодрамы,Наши',\n",
+       " 'Триллеры,Криминал,Зарубежные',\n",
+       " 'Триллеры,Фантастика,Боевики,Зарубежные',\n",
+       " 'Военные,Триллеры,Боевики,Зарубежные',\n",
+       " 'Триллеры,Фантастика,Боевики,Зарубежные',\n",
+       " 'Приключения,Драмы,Фантастика,Мелодрамы,Боевики,Зарубежные',\n",
+       " 'Приключения,Комедии,Зарубежные',\n",
+       " 'Мультфильмы,Приключения,Комедии,Полнометражные,Наши',\n",
+       " 'Мультфильмы,Приключения,Полнометражные,Зарубежные',\n",
+       " 'Комедии,Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Приключения,Детективы,Триллеры,Боевики,Зарубежные',\n",
+       " 'Познавательные',\n",
+       " 'Триллеры,Драмы,Зарубежные',\n",
+       " 'Ужасы,Зарубежные',\n",
+       " 'Триллеры,Драмы,Криминал,Зарубежные',\n",
+       " 'Приключения,Комедии,Драмы,Фантастика,Боевики,Зарубежные',\n",
+       " 'Комедии,Наши',\n",
+       " 'Триллеры,Драмы,Фантастика,Боевики,Зарубежные',\n",
+       " 'Триллеры,Драмы,Наши',\n",
+       " 'Ужасы,Фантастика,Зарубежные',\n",
+       " 'Драмы,Исторические,Зарубежные',\n",
+       " 'Детективы,Триллеры,Драмы,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Зарубежные',\n",
+       " 'Ужасы,Детективы,Зарубежные',\n",
+       " 'Ужасы,Комедии,Триллеры,Наши',\n",
+       " 'Ужасы,Комедии,Зарубежные',\n",
+       " 'Семейные,Фильмы,Фантастика,Детские,Наши',\n",
+       " 'Военные,Наши',\n",
+       " 'Мультфильмы,Короткометражные,Детские,Наши',\n",
+       " 'Семейные,Комедии,Фильмы,Детские,Наши',\n",
+       " 'Триллеры,Драмы,Криминал,Зарубежные',\n",
+       " 'Комедии,Зарубежные',\n",
+       " 'Ужасы,Комедии,Детективы,Триллеры,Драмы,Зарубежные',\n",
+       " 'Детективы,Триллеры,Зарубежные',\n",
+       " 'Фантастика,Боевики,Зарубежные',\n",
+       " 'Военные,Приключения,Драмы,Зарубежные',\n",
+       " 'Триллеры,Драмы,Боевики,Зарубежные',\n",
+       " 'Драмы',\n",
+       " 'Военные,Приключения,Триллеры,Драмы,Исторические,Боевики,Зарубежные',\n",
+       " 'Триллеры,Драмы,Боевики,Криминал,Зарубежные',\n",
+       " 'Триллеры,Драмы,Криминал,Зарубежные',\n",
+       " 'Драмы,Исторические,Наши',\n",
+       " 'Приключения,Триллеры,Боевики,Зарубежные',\n",
+       " 'Триллеры,Боевики,Зарубежные',\n",
+       " 'Триллеры,Драмы,Боевики,Криминал,Зарубежные',\n",
+       " 'Триллеры,Боевики,Криминал,Зарубежные',\n",
+       " 'Триллеры,Фантастика,Боевики,Зарубежные',\n",
+       " 'Детективы,Триллеры,Драмы,Зарубежные',\n",
+       " 'Полнометражные,Зарубежные',\n",
+       " 'Триллеры,Боевики,Криминал,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Драмы,Зарубежные',\n",
+       " 'Комедии,Наши',\n",
+       " 'Приключения,Триллеры,Драмы,Зарубежные',\n",
+       " 'Мультфильмы,Комедии,Полнометражные,Зарубежные',\n",
+       " 'Приключения,Боевики,Криминал,Наши',\n",
+       " 'Военные,Драмы,Боевики,Наши',\n",
+       " 'Мультфильмы,Мультсериалы,Детские,Зарубежные',\n",
+       " 'Боевики,Наши',\n",
+       " 'Мультфильмы,Мультсериалы,Детские,Зарубежные',\n",
+       " 'Детективы,Триллеры,Зарубежные',\n",
+       " 'Триллеры,Боевики,Криминал,Зарубежные',\n",
+       " 'Приключения,Фантастика,Боевики,Зарубежные',\n",
+       " 'Детективы,Триллеры,Криминал,Зарубежные',\n",
+       " 'Мультфильмы,Приключения,Комедии,Полнометражные,Детские,Зарубежные',\n",
+       " 'Военные,Триллеры,Драмы,Исторические,Зарубежные',\n",
+       " 'Семейные,Приключения,Комедии,Боевики,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Драмы,Зарубежные',\n",
+       " 'Триллеры,Фантастика,Боевики,Зарубежные',\n",
+       " 'Детективы,Триллеры,Драмы,Зарубежные',\n",
+       " 'Приключения,Фантастика,Боевики,Зарубежные',\n",
+       " 'Игры',\n",
+       " 'Приключения,Детективы,Наши',\n",
+       " 'Приключения,Триллеры,Боевики,Зарубежные',\n",
+       " 'Ужасы,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Фантастика,Зарубежные',\n",
+       " 'Комедии,Зарубежные',\n",
+       " 'Триллеры,Драмы,Боевики,Криминал,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Фантастика,Зарубежные',\n",
+       " 'Мультфильмы,Приключения,Комедии,Полнометражные,Детские,Зарубежные',\n",
+       " 'Семейные,Комедии,Драмы,Зарубежные',\n",
+       " 'Мультфильмы,Приключения,Полнометражные,Зарубежные',\n",
+       " 'Детективы,Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Приключения,Фантастика,Боевики,Зарубежные',\n",
+       " 'Триллеры,Драмы,Криминал,Зарубежные',\n",
+       " 'Драмы,Зарубежные,Спортивные',\n",
+       " 'Детективы,Триллеры,Драмы,Фантастика,Зарубежные',\n",
+       " 'Приключения,Триллеры,Драмы,Боевики,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Фантастика,Боевики,Зарубежные',\n",
+       " 'Семейные,Комедии,Зарубежные',\n",
+       " 'Мультфильмы,Полнометражные,Детские,Зарубежные',\n",
+       " 'Комедии,Триллеры,Боевики,Криминал,Зарубежные',\n",
+       " 'Мультфильмы,Полнометражные,Детские,Зарубежные',\n",
+       " 'Драмы,Исторические,Зарубежные',\n",
+       " 'Детективы,Триллеры,Фантастика,Зарубежные',\n",
+       " 'Ужасы,Фантастика,Зарубежные',\n",
+       " 'Комедии,Зарубежные',\n",
+       " 'Драмы,Зарубежные',\n",
+       " 'Мультфильмы,Детские,Наши',\n",
+       " 'Семейные,Комедии,Драмы,Зарубежные',\n",
+       " 'Триллеры,Драмы,Криминал,Зарубежные',\n",
+       " 'Мультфильмы,Полнометражные,Детские,Наши',\n",
+       " 'Боевики,Наши',\n",
+       " 'Ужасы,Детективы,Триллеры,Зарубежные',\n",
+       " 'Приключения,Фантастика,Боевики,Зарубежные',\n",
+       " 'Комедии,Драмы,Криминал,Зарубежные',\n",
+       " 'Мультфильмы,Мультсериалы,Детские,Наши',\n",
+       " 'Приключения,Зарубежные',\n",
+       " 'Драмы,Фантастика,Зарубежные',\n",
+       " 'Триллеры,Фантастика,Боевики,Зарубежные',\n",
+       " 'Мультфильмы,Полнометражные,Детские,Зарубежные',\n",
+       " 'Ужасы,Фантастика,Боевики,Зарубежные',\n",
+       " 'Триллеры,Драмы,Боевики,Криминал,Зарубежные',\n",
+       " 'Драмы,Наши',\n",
+       " 'Триллеры,Боевики,Криминал,Зарубежные',\n",
+       " 'Приключения,Триллеры,Драмы,Боевики,Зарубежные',\n",
+       " 'Фантастика,Мелодрамы,Зарубежные',\n",
+       " 'Триллеры,Драмы,Зарубежные',\n",
+       " 'Комедии,Мелодрамы,Зарубежные',\n",
+       " 'Комедии,Триллеры,Драмы,Зарубежные',\n",
+       " 'Семейные,Комедии,Драмы,Мелодрамы,Зарубежные,Музыкальные',\n",
+       " 'Ужасы,Зарубежные',\n",
+       " 'Мультфильмы,Детские,Наши',\n",
+       " 'Триллеры,Боевики,Криминал,Зарубежные',\n",
+       " 'Детективы,Триллеры,Драмы,Зарубежные',\n",
+       " 'Приключения,Драмы,Боевики,Криминал,Наши',\n",
+       " 'Ужасы,Триллеры,Криминал,Зарубежные',\n",
+       " 'Приключения,Детективы,Криминал,Наши',\n",
+       " 'Ужасы,Зарубежные',\n",
+       " 'Комедии,Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Ужасы,Детективы,Триллеры,Зарубежные',\n",
+       " 'Триллеры,Драмы,Криминал,Зарубежные',\n",
+       " 'Ужасы,Детективы,Триллеры,Драмы,Зарубежные',\n",
+       " 'Мультфильмы,Комедии,Мультсериалы,Детские,Наши',\n",
+       " 'Ужасы,Зарубежные',\n",
+       " 'Драмы,Боевики,Криминал,Зарубежные',\n",
+       " 'Триллеры,Драмы,Боевики,Криминал,Зарубежные',\n",
+       " 'Семейные,Приключения,Фильмы,Драмы,Фантастика,Мелодрамы,Детские,Наши',\n",
+       " 'Детективы,Триллеры,Драмы,Фантастика,Зарубежные',\n",
+       " 'Ужасы,Комедии,Зарубежные',\n",
+       " 'Драмы,Мелодрамы,Наши',\n",
+       " 'Триллеры,Боевики,Криминал,Зарубежные',\n",
+       " 'Драмы,Боевики,Криминал,Зарубежные,Спортивные',\n",
+       " 'Военные,Драмы,Мелодрамы,Боевики,Наши',\n",
+       " 'Комедии,Наши',\n",
+       " 'Ужасы,Триллеры,Зарубежные',\n",
+       " 'Драмы,Боевики,Криминал,Зарубежные',\n",
+       " 'Драмы,Зарубежные',\n",
+       " 'Комедии,Триллеры,Боевики,Криминал,Зарубежные',\n",
+       " 'Приключения,Комедии,Наши',\n",
+       " 'Приключения,Триллеры,Фантастика,Боевики,Зарубежные',\n",
+       " 'Мультфильмы,Приключения,Мультсериалы,Детские,Зарубежные',\n",
+       " 'Драмы,Зарубежные,Спортивные',\n",
+       " 'Приключения,Триллеры,Боевики,Зарубежные',\n",
+       " 'Приключения,Боевики',\n",
+       " 'Приключения,Триллеры,Зарубежные',\n",
+       " 'Драмы,Фантастика,Мелодрамы,Зарубежные',\n",
+       " 'Детские,Зарубежные',\n",
+       " None,\n",
+       " 'Комедии,Детективы,Наши',\n",
+       " 'Мелодрамы,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Полнометражные,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Полнометражные,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Приключения,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Приключения,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Полнометражные,Детские,Наши',\n",
+       " 'Мультфильмы,Мультсериалы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Мультсериалы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Полнометражные,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Полнометражные,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Приключения,Детские,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Комедии,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Полнометражные,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Полнометражные,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Приключения,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультсериалы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Военные,Наши',\n",
+       " 'Комедии,Триллеры,Боевики,Зарубежные',\n",
+       " 'Детективы,Криминал,Наши',\n",
+       " 'Приключения,Полнометражные,Наши',\n",
+       " 'Ужасы,Детективы,Триллеры,Наши',\n",
+       " 'Военные,Драмы,Наши',\n",
+       " 'Драмы,Зарубежные',\n",
+       " 'Мелодрамы,Наши',\n",
+       " 'Триллеры,Драмы,Криминал,Наши',\n",
+       " 'Музыкальные',\n",
+       " 'Приключения,Фантастика,Мелодрамы,Боевики',\n",
+       " 'Комедии,Драмы,Фантастика,Зарубежные',\n",
+       " 'Реалити-шоу',\n",
+       " 'Приключения,Фантастика,Мелодрамы,Зарубежные',\n",
+       " 'Триллеры',\n",
+       " 'Драмы,Боевики,Криминал,Зарубежные',\n",
+       " 'Мультфильмы,Приключения,Полнометражные,Детские,Наши',\n",
+       " 'Юмористические,Передачи,Детские',\n",
+       " 'Приключения,Боевики,Зарубежные',\n",
+       " 'Драмы,Криминал',\n",
+       " 'Ужасы,Триллеры,Зарубежные',\n",
+       " 'Мультфильмы,Детские,Наши',\n",
+       " 'Приключения,Зарубежные',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Ужасы,Комедии,Для взрослых,Зарубежные',\n",
+       " 'Военные,Драмы,Наши',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Драмы,Арт-хаус,Зарубежные',\n",
+       " 'Приключения,Триллеры,Драмы,Фантастика,Арт-хаус,Зарубежные',\n",
+       " 'Приключения,Драмы,Мелодрамы,Арт-хаус,Зарубежные',\n",
+       " 'Комедии,Драмы,Мелодрамы,Арт-хаус,Зарубежные',\n",
+       " 'Комедии,Драмы,Арт-хаус,Зарубежные',\n",
+       " 'Драмы,Наши',\n",
+       " 'Комедии,Арт-хаус,Зарубежные',\n",
+       " 'Комедии,Наши',\n",
+       " 'Прочие',\n",
+       " 'Детские',\n",
+       " 'Ужасы,Зарубежные',\n",
+       " 'Триллеры,Драмы,Зарубежные',\n",
+       " 'Детские,Зарубежные',\n",
+       " 'Детские,Зарубежные',\n",
+       " 'Детские,Наши',\n",
+       " 'Наши',\n",
+       " 'Ужасы,Детективы,Триллеры,Фантастика,Зарубежные',\n",
+       " 'Семейные,Комедии,Детские,Наши',\n",
+       " 'Семейные,Комедии,Исторические,Наши',\n",
+       " 'Приключения,Триллеры,Фантастика,Зарубежные',\n",
+       " 'Мультфильмы,Комедии,Полнометражные,Мультсериалы,Зарубежные',\n",
+       " 'Комедии,Драмы,Для взрослых,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Для взрослых,Зарубежные',\n",
+       " 'Мультфильмы,Мультсериалы,Детские,Наши',\n",
+       " 'Комедии,Наши',\n",
+       " 'Мультфильмы,Полнометражные,Детские,Зарубежные',\n",
+       " 'Ужасы,Приключения,Комедии,Зарубежные',\n",
+       " 'Мультфильмы,Приключения,Комедии,Полнометражные,Детские,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Фантастика,Зарубежные',\n",
+       " 'Ужасы,Комедии,Триллеры,Для взрослых,Зарубежные',\n",
+       " 'Приключения,Боевики,Зарубежные',\n",
+       " 'Приключения,Боевики,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Зарубежные',\n",
+       " 'Драмы,Фантастика,Зарубежные,Мюзиклы',\n",
+       " 'Мультфильмы,Приключения,Полнометражные,Детские,Зарубежные',\n",
+       " 'Драмы,Боевики,Зарубежные',\n",
+       " 'Мультфильмы,Мультсериалы,Детские,Наши',\n",
+       " 'Комедии,Детские',\n",
+       " 'Мультфильмы,Мультсериалы,Детские,Наши',\n",
+       " 'Приключения,Зарубежные',\n",
+       " 'Драмы,Фантастика,Зарубежные',\n",
+       " 'Драмы,Фантастика,Зарубежные',\n",
+       " 'Драмы,Криминал,Наши',\n",
+       " 'Комедии,Фантастика,Наши',\n",
+       " 'Мультфильмы,Приключения,Зарубежные',\n",
+       " 'Драмы,Криминал',\n",
+       " None,\n",
+       " None,\n",
+       " None,\n",
+       " None,\n",
+       " 'Комедии,Триллеры,Боевики,Криминал,Зарубежные',\n",
+       " 'Триллеры,Фантастика,Боевики,Криминал,Зарубежные',\n",
+       " 'Триллеры,Драмы,Боевики,Криминал,Наши',\n",
+       " 'Комедии,Фантастика,Мелодрамы,Наши',\n",
+       " 'Триллеры,Боевики,Криминал,Зарубежные',\n",
+       " 'Триллеры,Драмы,Зарубежные',\n",
+       " 'Комедии,Триллеры,Боевики,Криминал,Зарубежные',\n",
+       " 'Комедии,Для взрослых,Наши',\n",
+       " 'Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Ужасы,Комедии,Мелодрамы,Зарубежные',\n",
+       " 'Комедии,Наши',\n",
+       " 'Триллеры,Драмы,Криминал,Наши',\n",
+       " 'Триллеры,Драмы,Криминал,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Боевики,Зарубежные',\n",
+       " None,\n",
+       " 'Военные,Драмы,Наши',\n",
+       " 'Семейные,Фильмы,Для детей,Наши',\n",
+       " 'Комедии,Мелодрамы,Наши',\n",
+       " 'Комедии,Мелодрамы,Наши',\n",
+       " 'Семейные,Короткометражные,Комедии,Фильмы,Для детей,Наши',\n",
+       " 'Детективы,Криминал,Наши',\n",
+       " 'Семейные,Фильмы,Фантастика,Для детей,Наши',\n",
+       " 'Драмы,Мелодрамы,Наши',\n",
+       " 'Семейные,Приключения,Фильмы,Для детей,Наши',\n",
+       " 'Военные,Драмы,Наши',\n",
+       " 'Военные,Наши',\n",
+       " 'Комедии,Драмы,Мелодрамы,Наши',\n",
+       " 'Мультфильмы,Мультфильмы в 3D,Полнометражные,Для детей,Зарубежные',\n",
+       " 'Мультфильмы,Для детей,Зарубежные',\n",
+       " 'Триллеры,Мелодрамы,Боевики,Зарубежные',\n",
+       " 'Наши,Музыкальные',\n",
+       " 'Комедии,Драмы,Наши',\n",
+       " 'Анимация,Для взрослых,Зарубежные',\n",
+       " 'Мультфильмы,Зарубежные',\n",
+       " 'Военные,Драмы,Криминал,Наши',\n",
+       " 'Боевики,Криминал,Наши',\n",
+       " 'Комедии,Наши',\n",
+       " 'Комедии,Мелодрамы,Наши,Мюзиклы',\n",
+       " 'Семейные,Комедии,Драмы,Наши',\n",
+       " 'Драмы,Наши',\n",
+       " 'Драмы,Мелодрамы,Наши',\n",
+       " 'Фантастика,Мелодрамы,Наши',\n",
+       " 'Военные,Драмы,Наши',\n",
+       " 'Семейные,Фантастика,Наши,Музыкальные',\n",
+       " 'Драмы,Для взрослых,Наши',\n",
+       " 'Семейные,Фантастика,Наши',\n",
+       " 'Семейные,Приключения,Фильмы,Драмы,Фантастика,Для детей,Наши',\n",
+       " 'Криминал,Наши',\n",
+       " 'Драмы,Криминал,Наши',\n",
+       " 'Комедии,Наши,Мюзиклы',\n",
+       " 'Семейные,Комедии,Фильмы,Драмы,Для детей,Наши',\n",
+       " 'Семейные,Приключения,Комедии,Наши',\n",
+       " 'Семейные,Приключения,Фильмы,Для детей,Наши',\n",
+       " 'Драмы,Фантастика,Наши',\n",
+       " None,\n",
+       " 'Триллеры,Мелодрамы,Боевики,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Зарубежные',\n",
+       " None,\n",
+       " None,\n",
+       " 'Приключения,Комедии,Мелодрамы,Наши',\n",
+       " 'Военные,Приключения,Драмы,Наши',\n",
+       " 'Фантастика,Наши',\n",
+       " 'Комедии,Наши',\n",
+       " 'Комедии,Наши,Мюзиклы',\n",
+       " None,\n",
+       " 'Мультфильмы,Мультсериалы,Для детей,Наши',\n",
+       " 'Мультфильмы,Приключения,Мультсериалы,Для детей,Наши',\n",
+       " 'Мультфильмы,Мультсериалы,Для детей,Наши',\n",
+       " 'Ужасы,Триллеры,Для взрослых,Зарубежные',\n",
+       " 'Семейные,Документальные,Зарубежные',\n",
+       " None,\n",
+       " None,\n",
+       " None,\n",
+       " 'Мюзиклы',\n",
+       " 'Приключения,Мультсериалы,Зарубежные',\n",
+       " 'Для детей,Зарубежные',\n",
+       " 'Ужасы,Зарубежные',\n",
+       " 'Комедии,Наши',\n",
+       " 'Триллеры,Драмы,Фантастика,Зарубежные',\n",
+       " 'Мелодрамы,Наши',\n",
+       " 'Драмы,Наши',\n",
+       " 'Драмы,Фантастика,Наши',\n",
+       " 'Приключения,Комедии,Зарубежные',\n",
+       " 'Военные,Триллеры,Драмы,Зарубежные',\n",
+       " 'Драмы,Мелодрамы,Наши',\n",
+       " 'Ужасы,Триллеры,Драмы',\n",
+       " 'Ужасы,Детективы,Триллеры',\n",
+       " 'Ужасы,Детективы,Триллеры',\n",
+       " 'Комедии,Для взрослых,Наши',\n",
+       " 'Драмы,Зарубежные,Биография',\n",
+       " 'Ужасы,Триллеры,Зарубежные',\n",
+       " None,\n",
+       " None,\n",
+       " None,\n",
+       " 'Ужасы,Фантастика,Зарубежные',\n",
+       " 'Триллеры,Боевики,Зарубежные',\n",
+       " 'Фантастика,Боевики,Зарубежные',\n",
+       " 'Военные,Драмы,Исторические,Наши',\n",
+       " 'Драмы',\n",
+       " 'Триллеры,Боевики,Зарубежные',\n",
+       " 'Ужасы,Комедии,Зарубежные',\n",
+       " 'Триллеры,Наши',\n",
+       " 'Ужасы,Для взрослых,Зарубежные',\n",
+       " 'Триллеры,Боевики,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Зарубежные',\n",
+       " 'Мультфильмы,Короткометражные,Союзмультфильм,Наши',\n",
+       " 'Комедии,Драмы,Зарубежные',\n",
+       " 'Триллеры,Зарубежные',\n",
+       " 'Ужасы,Детективы,Триллеры',\n",
+       " 'Комедии,Фантастика,Наши',\n",
+       " 'Комедии',\n",
+       " 'Эротика',\n",
+       " None,\n",
+       " None,\n",
+       " None,\n",
+       " 'Эротика',\n",
+       " 'Эротика',\n",
+       " 'Эротика',\n",
+       " 'Эротика',\n",
+       " None,\n",
+       " 'Триллеры,Боевики,Зарубежные',\n",
+       " 'Семейные,Приключения,Комедии',\n",
+       " 'Драмы,Криминал,Наши',\n",
+       " 'Военные,Драмы,Наши',\n",
+       " 'Триллеры,Зарубежные',\n",
+       " 'Драмы,Боевики,Наши',\n",
+       " 'Драмы,Боевики,Криминал',\n",
+       " 'Драмы,Мелодрамы,Наши',\n",
+       " 'Комедии,Мелодрамы,Наши',\n",
+       " 'Военные,Драмы,Боевики,Наши',\n",
+       " 'Документальные',\n",
+       " 'Боевики,Криминал,Наши',\n",
+       " 'Ужасы,Триллеры,Зарубежные',\n",
+       " 'Детективы,Боевики,Наши',\n",
+       " 'Комедии,Боевики,Зарубежные',\n",
+       " 'Триллеры,Зарубежные',\n",
+       " 'Комедии,Драмы,Зарубежные',\n",
+       " 'Приключения,Драмы,Наши',\n",
+       " 'Приключения,Комедии,Мелодрамы,Наши',\n",
+       " 'Комедии',\n",
+       " 'Приключения,Драмы,Боевики,Наши',\n",
+       " 'Триллеры,Драмы,Зарубежные',\n",
+       " 'Ужасы,Фантастика,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Зарубежные',\n",
+       " 'Боевики,Криминал,Наши',\n",
+       " 'Детективы,Криминал,Наши',\n",
+       " 'Детективы,Боевики,Криминал,Наши',\n",
+       " 'Детективы,Криминал,Наши',\n",
+       " 'Комедии,Наши',\n",
+       " 'Триллеры,Боевики,Зарубежные',\n",
+       " 'Комедии,Зарубежные',\n",
+       " 'Триллеры,Боевики,Зарубежные',\n",
+       " 'Мультфильмы,Комедии,Полнометражные,Наши',\n",
+       " 'Триллеры,Драмы,Наши',\n",
+       " 'Ужасы,Фантастика,Зарубежные',\n",
+       " 'Боевики,Криминал,Зарубежные',\n",
+       " 'Приключения,Фантастика,Наши',\n",
+       " 'Военные,Комедии,Наши',\n",
+       " 'Детективы,Наши',\n",
+       " 'Приключения,Драмы,Наши',\n",
+       " 'Комедии,Драмы,Наши',\n",
+       " 'Приключения,Комедии,Наши',\n",
+       " 'Драмы,Исторические,Наши',\n",
+       " 'Детективы,Боевики,Наши',\n",
+       " 'Боевики,Наши',\n",
+       " 'Драмы,Мелодрамы,Наши',\n",
+       " 'Детективы,Наши',\n",
+       " 'Триллеры,Боевики,Зарубежные',\n",
+       " 'Ужасы,Комедии,Зарубежные',\n",
+       " 'Приключения,Детективы,Криминал,Наши',\n",
+       " 'Фантастика,Мелодрамы,Зарубежные',\n",
+       " 'Эротика',\n",
+       " 'Триллеры,Боевики,Зарубежные',\n",
+       " 'Драмы,Для взрослых,Зарубежные',\n",
+       " 'Драмы,Для взрослых,Зарубежные',\n",
+       " 'Триллеры,Драмы,Наши',\n",
+       " 'Исторические,Документальные,Спортивные',\n",
+       " 'Приключения,Детективы,Наши',\n",
+       " 'Драмы,Боевики,Наши',\n",
+       " None,\n",
+       " None,\n",
+       " 'Комедия',\n",
+       " 'Реалити-шоу',\n",
+       " 'Научная фантастика,Криминал,Триллер,Драма',\n",
+       " 'Комедия,Драма',\n",
+       " 'Исторический,Военный,Боевик,Драма',\n",
+       " 'Эротика',\n",
+       " 'Эротика',\n",
+       " 'Эротика',\n",
+       " 'Документальный',\n",
+       " 'Документальный',\n",
+       " 'Исторический,Драма,Биография',\n",
+       " 'Военный,Драма',\n",
+       " 'Документальный',\n",
+       " 'Исторический,Документальный,Драма',\n",
+       " 'Исторический,Драма,Биография',\n",
+       " 'Исторический,Документальный,Драма',\n",
+       " 'Криминал,Зарубежные',\n",
+       " 'Детективы,Драмы,Наши',\n",
+       " 'Полнометражные,Зарубежные',\n",
+       " 'Боевики,Наши',\n",
+       " 'Ужасы,Зарубежные',\n",
+       " 'Ужасы,Триллеры',\n",
+       " 'Ужасы,Фантастика,Зарубежные',\n",
+       " 'Ужасы,Для взрослых,Зарубежные',\n",
+       " 'Триллеры,Фантастика,Наши',\n",
+       " 'Комедии,Наши',\n",
+       " 'Комедии,Фантастика,Зарубежные',\n",
+       " 'Игры',\n",
+       " 'Фантастика,Боевики,Зарубежные',\n",
+       " 'Фантастика,Боевики,Зарубежные',\n",
+       " 'Мультфильмы,Приключения,Зарубежные',\n",
+       " 'Детективы,Триллеры,Зарубежные',\n",
+       " 'Игры',\n",
+       " 'Ужасы,Триллеры,Зарубежные',\n",
+       " 'Ужасы,Зарубежные',\n",
+       " 'Детективы,Драмы,Зарубежные',\n",
+       " 'Фильмы,Фантастика,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Зарубежные',\n",
+       " 'Триллеры,Зарубежные',\n",
+       " 'Приключения,Боевики,Зарубежные',\n",
+       " 'Документальные,Зарубежные',\n",
+       " 'Фантастика,Боевики,Зарубежные',\n",
+       " 'Драмы,Зарубежные',\n",
+       " 'Комедии,Мелодрамы,Зарубежные',\n",
+       " 'Ужасы,Комедии,Зарубежные',\n",
+       " 'Приключения,Фантастика,Зарубежные',\n",
+       " 'Приключения,Драмы,Исторические',\n",
+       " 'Приключения,Фантастика,Зарубежные',\n",
+       " 'Военные,Драмы,Боевики',\n",
+       " 'Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Зарубежные',\n",
+       " 'Передачи,Для детей,Наши',\n",
+       " 'Комедии,Драмы,Зарубежные',\n",
+       " 'Комедии,Мелодрамы',\n",
+       " 'Драмы,Зарубежные,Спортивные',\n",
+       " 'Драмы,Исторические,Мелодрамы',\n",
+       " 'Драмы,Криминал',\n",
+       " 'Приключения,Комедии,Боевики',\n",
+       " 'Комедии',\n",
+       " 'Мультсериалы,Для детей',\n",
+       " 'Детективы,Триллеры,Мелодрамы',\n",
+       " 'Драмы,Исторические,Спортивные',\n",
+       " 'Комедии,Наши',\n",
+       " 'Для детей',\n",
+       " 'Триллеры,Криминал,Зарубежные',\n",
+       " 'Драмы,Криминал',\n",
+       " 'Драмы',\n",
+       " 'Триллеры,Драмы,Зарубежные',\n",
+       " 'Комедии,Наши',\n",
+       " 'Приключения,Боевики,Зарубежные',\n",
+       " 'Комедии,Фантастика,Боевики',\n",
+       " 'Для детей,Зарубежные',\n",
+       " 'Мультсериалы,Зарубежные',\n",
+       " 'Комедии,Драмы,Зарубежные',\n",
+       " 'Криминал',\n",
+       " 'Фантастика,Боевики,Зарубежные',\n",
+       " 'Документальные,Криминал,Зарубежные',\n",
+       " 'Драмы,Криминал,Зарубежные',\n",
+       " 'Комедии,Драмы,Зарубежные',\n",
+       " 'Триллеры,Боевики,Криминал',\n",
+       " 'Триллеры,Боевики',\n",
+       " 'Ужасы,Боевики,Зарубежные',\n",
+       " 'Мелодрамы,Боевики,Зарубежные',\n",
+       " 'Триллеры,Драмы,Боевики,Зарубежные',\n",
+       " 'Комедии,Боевики,Зарубежные',\n",
+       " 'Триллеры,Драмы,Боевики',\n",
+       " 'Приключения,Фантастика,Зарубежные',\n",
+       " 'Драмы,Мелодрамы,Криминал',\n",
+       " 'Драмы,Криминал',\n",
+       " 'Драмы,Зарубежные',\n",
+       " 'Приключения,Драмы,Зарубежные',\n",
+       " 'Документальные',\n",
+       " 'Детективы',\n",
+       " 'Полнометражные,Фантастика,Зарубежные',\n",
+       " 'Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Исторические,Мелодрамы',\n",
+       " 'Триллеры,Фантастика,Боевики',\n",
+       " 'Триллеры,Фантастика,Боевики',\n",
+       " 'Семейные,Фантастика,Мюзиклы',\n",
+       " 'Боевики,Криминал',\n",
+       " 'Военные,Боевики',\n",
+       " 'Комедии',\n",
+       " 'Семейные,Комедии',\n",
+       " 'Триллеры',\n",
+       " 'Детективы,Наши',\n",
+       " 'Комедии,Наши',\n",
+       " 'Триллеры,Драмы,Мелодрамы',\n",
+       " 'Драмы,Фантастика',\n",
+       " 'Передачи,Для детей,Наши',\n",
+       " 'Мелодрама,Фэнтези, сказка,Криминал,Триллер,Драма',\n",
+       " 'Триллеры,Драмы,Зарубежные',\n",
+       " 'Приключения,Зарубежные',\n",
+       " 'Фантастика,Зарубежные',\n",
+       " 'Комедии,Зарубежные',\n",
+       " 'Драмы,Фантастика,Зарубежные',\n",
+       " 'Комедии,Триллеры,Наши',\n",
+       " 'Комедии,Криминал,Зарубежные',\n",
+       " 'Комедии',\n",
+       " 'Триллеры,Драмы,Зарубежные',\n",
+       " 'Приключения,Комедии,Наши',\n",
+       " 'Приключения,Фантастика',\n",
+       " 'Ужасы,Фэнтези, сказка,Драма',\n",
+       " 'Мультфильмы,Комедии,Зарубежные',\n",
+       " 'Семейные,Комедии,Фантастика,Зарубежные',\n",
+       " 'Фантастика,Боевики,Зарубежные',\n",
+       " 'Приключения,Комедии,Наши',\n",
+       " 'Документальные,Зарубежные',\n",
+       " 'Документальные,Зарубежные',\n",
+       " 'Документальные,Зарубежные',\n",
+       " 'Документальные,Зарубежные',\n",
+       " 'Документальные,Зарубежные',\n",
+       " 'Семейные,Приключения,Комедии,Мелодрамы',\n",
+       " 'Документальные,Зарубежные',\n",
+       " 'Документальные,Зарубежные',\n",
+       " 'Документальные,Зарубежные',\n",
+       " 'Документальные,Зарубежные',\n",
+       " 'Документальные,Зарубежные',\n",
+       " 'Документальные,Зарубежные',\n",
+       " 'Документальные,Зарубежные',\n",
+       " 'Приключения,Исторические,Зарубежные',\n",
+       " 'Ужасы,Приключения,Триллеры',\n",
+       " 'Полнометражные,Зарубежные',\n",
+       " 'Драмы,Боевики',\n",
+       " 'Приключения,Боевики,Зарубежные',\n",
+       " 'Триллеры,Драмы,Зарубежные',\n",
+       " 'Комедии,Криминал,Зарубежные',\n",
+       " 'Мультфильмы,Полнометражные,Зарубежные',\n",
+       " 'Драма',\n",
+       " 'Криминал,Драма',\n",
+       " 'Криминал,Триллер,Драма',\n",
+       " 'Ужасы,Триллеры,Зарубежные',\n",
+       " 'Приключения,Драмы,Мелодрамы,Боевики',\n",
+       " 'Семейные,Приключения,Зарубежные',\n",
+       " 'Познавательные',\n",
+       " 'Мультфильмы,Мультсериалы,Зарубежные',\n",
+       " 'Мультфильмы,Мультсериалы,Зарубежные',\n",
+       " 'Мультфильмы,Мультсериалы,Зарубежные',\n",
+       " 'Мультфильмы,Мультсериалы,Зарубежные',\n",
+       " 'Мультфильмы,Мультсериалы,Зарубежные',\n",
+       " 'Приключения,Мультсериалы',\n",
+       " 'Мультфильмы,Мультсериалы,Зарубежные',\n",
+       " 'Мультфильмы,Мультсериалы,Зарубежные',\n",
+       " 'Мультсериалы,Для детей,Зарубежные',\n",
+       " 'Детективы,Триллеры,Драмы,Криминал,Зарубежные',\n",
+       " 'Приключения,Детективы,Драмы,Фантастика,Мелодрамы,Боевики',\n",
+       " 'Детективы,Триллеры,Фантастика',\n",
+       " 'Комедии',\n",
+       " 'Юмористические,Комедии',\n",
+       " 'Детективы,Драмы,Криминал',\n",
+       " 'Комедии,Детективы,Боевики,Криминал',\n",
+       " 'Боевики',\n",
+       " 'Боевики',\n",
+       " 'Детективы,Драмы,Криминал',\n",
+       " 'Военные,Драмы',\n",
+       " 'Драмы',\n",
+       " 'Приключения,Триллеры,Драмы,Исторические,Боевики,Криминал',\n",
+       " 'Комедии,Триллеры,Криминал',\n",
+       " 'Фантастика,Боевики',\n",
+       " 'Драмы,Зарубежные,Биография',\n",
+       " 'Комедии',\n",
+       " 'Ужасы,Детективы,Триллеры',\n",
+       " 'Ужасы,Триллеры,Драмы',\n",
+       " 'Ужасы,Комедии,Боевики',\n",
+       " 'Ужасы,Зарубежные',\n",
+       " 'Комедии,Зарубежные',\n",
+       " 'Драмы,Исторические,Зарубежные',\n",
+       " 'Комедии,Зарубежные',\n",
+       " 'Военные,Триллеры,Драмы,Зарубежные',\n",
+       " 'Ужасы,Зарубежные',\n",
+       " 'Приключения,Комедии,Фантастика,Боевики,Зарубежные',\n",
+       " 'Драмы,Фантастика,Зарубежные',\n",
+       " 'Драмы,Зарубежные',\n",
+       " 'Фантастика,Зарубежные',\n",
+       " 'Документальный',\n",
+       " 'Драма',\n",
+       " 'Комедия,Драма',\n",
+       " 'Криминал,Драма',\n",
+       " 'Комедия,Драма',\n",
+       " 'Комедия',\n",
+       " 'Исторический,Мелодрама,Военный,Боевик,Драма',\n",
+       " 'Боевик,Триллер,Драма',\n",
+       " 'Криминал,Драма',\n",
+       " 'Комедии,Боевики,Зарубежные',\n",
+       " 'Комедии,Драмы,Фантастика,Зарубежные',\n",
+       " 'Семейные,Комедии,Зарубежные',\n",
+       " 'Фантастика,Боевики,Зарубежные',\n",
+       " 'Приключения,Боевики,Зарубежные',\n",
+       " 'Прочие',\n",
+       " 'Приключения,Фантастика,Зарубежные',\n",
+       " 'Семейные,Комедии',\n",
+       " 'Приключения,Наши',\n",
+       " 'Исторические,Познавательные,Документальные',\n",
+       " 'Драмы,Наши',\n",
+       " 'Комедии,Для детей',\n",
+       " 'Триллеры,Фантастика,Боевики',\n",
+       " 'Познавательные,Документальные',\n",
+       " 'Боевики,Наши',\n",
+       " 'Комедии,Криминал',\n",
+       " 'Триллеры,Фантастика,Боевики',\n",
+       " 'Военные,Приключения,Фантастика,Боевики',\n",
+       " 'Документальные',\n",
+       " 'Драмы,Криминал',\n",
+       " 'Исторические,Документальные',\n",
+       " 'Эротика',\n",
+       " 'Комедии,Наши',\n",
+       " 'Документальные,Наши',\n",
+       " 'Комедии,Наши',\n",
+       " 'Комедии,Наши',\n",
+       " 'Комедии,Наши',\n",
+       " 'Комедии,Мюзиклы',\n",
+       " 'Комедии',\n",
+       " 'Комедии,Наши',\n",
+       " 'Комедии,Наши',\n",
+       " 'Прочие',\n",
+       " 'Комедии,Наши',\n",
+       " 'Комедии',\n",
+       " 'Комедии,Мультсериалы',\n",
+       " 'Комедии,Наши',\n",
+       " 'Мультсериалы',\n",
+       " 'Мультсериалы',\n",
+       " 'Триллеры,Драмы,Фантастика,Наши',\n",
+       " 'Комедии,Драмы,Зарубежные',\n",
+       " 'Комедии,Мелодрамы',\n",
+       " 'Приключения,Комедии,Фантастика',\n",
+       " 'Семейные,Приключения,Комедии',\n",
+       " 'Драмы,Наши',\n",
+       " 'Военные,Драмы,Исторические',\n",
+       " 'Драмы,Боевики',\n",
+       " 'Драмы,Боевики,Криминал',\n",
+       " 'Фантастика,Мультсериалы,Зарубежные',\n",
+       " 'Для детей,Зарубежные',\n",
+       " 'Приключения,Для детей,Зарубежные',\n",
+       " 'Детективы,Криминал',\n",
+       " 'Семейные',\n",
+       " 'Комедии,Драмы,Фантастика',\n",
+       " 'Военные,Драмы',\n",
+       " 'Приключения,Триллеры,Драмы,Наши',\n",
+       " 'Драмы,Мелодрамы',\n",
+       " 'Триллеры,Драмы,Криминал',\n",
+       " 'Драмы,Исторические',\n",
+       " 'Комедии,Мелодрамы',\n",
+       " 'Военные,Драмы,Боевики,Наши',\n",
+       " 'Криминал',\n",
+       " 'Документальные',\n",
+       " 'Документальные',\n",
+       " 'Комедии,Зарубежные,Спортивные',\n",
+       " 'Приключения,Драмы,Боевики,Криминал',\n",
+       " 'Драмы,Зарубежные',\n",
+       " 'Комедии,Мелодрамы,Зарубежные',\n",
+       " 'Криминал,Драма',\n",
+       " 'Семейные,Приключения,Фантастика',\n",
+       " 'Игры',\n",
+       " 'Игры',\n",
+       " 'Документальные',\n",
+       " 'Детективы,Триллеры,Зарубежные',\n",
+       " 'Военные,Драмы,Наши',\n",
+       " 'Драмы,Зарубежные',\n",
+       " 'Приключения,Фантастика,Зарубежные',\n",
+       " 'Фантастика,Боевики,Зарубежные',\n",
+       " 'Триллеры,Драмы,Зарубежные',\n",
+       " 'Приключения,Детективы,Триллеры,Фантастика,Боевики,Зарубежные',\n",
+       " 'Приключения,Фантастика,Зарубежные',\n",
+       " 'Семейные,Приключения,Зарубежные',\n",
+       " 'Драмы,Боевики',\n",
+       " 'Ужасы',\n",
+       " 'Мультфильмы,Приключения,Зарубежные',\n",
+       " 'Триллеры,Драмы,Зарубежные',\n",
+       " 'Мультсериалы,Зарубежные,Для самых маленьких',\n",
+       " 'Фантастика,Боевики',\n",
+       " 'Семейные,Приключения,Комедии',\n",
+       " 'Комедии,Зарубежные',\n",
+       " 'Документальные,Зарубежные',\n",
+       " 'Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Ужасы,Зарубежные',\n",
+       " 'Ужасы,Комедии',\n",
+       " 'Мультсериалы,Зарубежные',\n",
+       " 'Комедии,Мелодрамы,Наши',\n",
+       " 'Детективы,Боевики,Криминал',\n",
+       " 'Мелодрамы',\n",
+       " 'Триллеры,Боевики,Зарубежные',\n",
+       " 'Триллеры,Драмы,Боевики,Зарубежные',\n",
+       " 'Фантастика,Зарубежные',\n",
+       " 'Фантастика,Боевики,Зарубежные',\n",
+       " 'Семейные,Приключения,Комедии',\n",
+       " 'Триллеры,Боевики,Зарубежные',\n",
+       " 'Комедии,Зарубежные',\n",
+       " 'Драмы,Фантастика,Мелодрамы,Зарубежные',\n",
+       " 'Полнометражные,Зарубежные',\n",
+       " 'Триллеры,Боевики,Зарубежные',\n",
+       " 'Драмы,Криминал,Зарубежные',\n",
+       " 'Боевики,Криминал,Зарубежные',\n",
+       " 'Комедии,Драмы,Зарубежные',\n",
+       " 'Триллеры,Фантастика,Зарубежные',\n",
+       " 'Криминал,Наши',\n",
+       " 'Военные,Детективы,Драмы',\n",
+       " 'Комедии,Драмы,Зарубежные',\n",
+       " 'Триллеры,Криминал,Зарубежные',\n",
+       " 'Детективы,Драмы,Зарубежные',\n",
+       " 'Фантастика,Боевики,Зарубежные',\n",
+       " 'Боевики,Зарубежные',\n",
+       " 'Комедии,Криминал,Наши',\n",
+       " 'Комедии,Наши',\n",
+       " 'Комедии,Полнометражные,Зарубежные',\n",
+       " 'Приключения,Комедии,Зарубежные',\n",
+       " 'Драмы,Исторические,Зарубежные',\n",
+       " 'Комедии,Мелодрамы',\n",
+       " 'Драмы,Боевики,Зарубежные',\n",
+       " 'Драмы,Боевики,Зарубежные',\n",
+       " 'Комедии,Наши',\n",
+       " 'Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Приключения,Фантастика,Зарубежные',\n",
+       " 'Полнометражные,Для детей,Зарубежные',\n",
+       " 'Комедии,Мелодрамы,Зарубежные',\n",
+       " 'Комедии,Фантастика,Зарубежные',\n",
+       " 'Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Мультфильмы,Короткометражные,Союзмультфильм',\n",
+       " 'Триллеры,Драмы,Зарубежные',\n",
+       " 'Комедии,Фильмы,Наши',\n",
+       " 'Мультфильмы,Короткометражные,Союзмультфильм',\n",
+       " 'Мультфильмы,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Короткометражные,Союзмультфильм',\n",
+       " 'Мультфильмы,Мультсериалы,Союзмультфильм',\n",
+       " 'Мультфильмы,Короткометражные,Союзмультфильм',\n",
+       " 'Мультфильмы,Короткометражные,Союзмультфильм',\n",
+       " 'Мультфильмы,Для детей,Наши',\n",
+       " 'Ужасы,Триллеры,Зарубежные',\n",
+       " 'Ужасы,Зарубежные',\n",
+       " 'Полнометражные,Западные мультфильмы,Для детей,Для взрослых,Зарубежные',\n",
+       " 'Комедии,Советское кино,Мелодрамы,Русские,Для всей семьи',\n",
+       " 'Русские мультфильмы,Про животных,Русские,Советские,Для детей',\n",
+       " 'Драмы,Исторические,Мелодрамы,Зарубежные',\n",
+       " 'Комедии,Зарубежные',\n",
+       " 'Ужасы,Детективы,Триллеры,Драмы',\n",
+       " 'Драмы,Зарубежные',\n",
+       " 'Драмы,Зарубежные',\n",
+       " 'Приключения,Фэнтези,Боевики',\n",
+       " 'Комедии,Зарубежные',\n",
+       " 'Драмы,Боевики,Криминал,Зарубежные',\n",
+       " 'Триллеры,Боевики,Криминал',\n",
+       " 'Комедии,Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Военные,Драмы,Мелодрамы,Русские,Боевики',\n",
+       " 'Комедии,Советское кино,Экранизации,Мелодрамы',\n",
+       " 'Комедии,Советское кино,Мелодрамы',\n",
+       " 'Эротика,Мелодрамы,Зарубежные',\n",
+       " 'Приключения,Комедии,Русские',\n",
+       " 'Приключения,Детективы,Комедии,Советское кино,Для всей семьи',\n",
+       " 'Драмы,Зарубежные',\n",
+       " 'Комедии,Русские',\n",
+       " 'Комедии,Фэнтези,Для всей семьи,Зарубежные',\n",
+       " ...]"
+      ]
+     },
+     "execution_count": 150,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "genres = data_items.select('genres').rdd.flatMap(lambda x: x).collect()\n",
+    "genres"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 151,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "['Драмы,Для взрослых,Наши',\n",
+       " 'Ужасы,Драмы,Зарубежные',\n",
+       " 'Ужасы,Детективы,Триллеры,Мелодрамы,Криминал',\n",
+       " 'Русские мультфильмы,Русские,Сериалы,Для всей семьи,Для детей,Развивающие,Детские песни',\n",
+       " 'Приключения,Фэнтези,Русские',\n",
+       " 'Приключения,Мелодрамы,Наши',\n",
+       " 'Русские мультфильмы,Сказки,Русские,Сериалы,Для детей',\n",
+       " 'Детективы,Триллеры,Криминал,Зарубежные',\n",
+       " 'Приключения,Фантастика',\n",
+       " 'Детективы,Триллеры,Русские,Боевики',\n",
+       " 'Русские,Сериалы,Для всей семьи,Для детей,Развивающие',\n",
+       " 'Комедии,Фантастика,Боевики',\n",
+       " 'Детективы,Боевики,Криминал',\n",
+       " 'Мистические,Приключения,Фэнтези,Боевики,Зарубежные',\n",
+       " 'Драмы,Исторические',\n",
+       " 'Приключения,Драмы,Мелодрамы,Боевики',\n",
+       " 'Детективы,Мелодрамы',\n",
+       " 'Военные,Приключения,Драмы,Наши',\n",
+       " 'Комедии,Триллеры,Наши',\n",
+       " 'Советское кино,Драмы,Исторические,Русские',\n",
+       " 'Западные мультфильмы,Сериалы,Для детей,Развивающие,Хочу всё знать,Зарубежные',\n",
+       " 'Военные,Драмы,Боевики,Наши',\n",
+       " 'Эротика,Драмы,Зарубежные',\n",
+       " 'Артхаус,Эротика',\n",
+       " 'Приключения,Комедии,Советское кино,Фильмы,Фантастика,Русские,Для всей семьи,Для детей',\n",
+       " 'Драмы,Зарубежные',\n",
+       " 'Мистические,Триллеры,Драмы,Боевики,Зарубежные',\n",
+       " 'Триллеры,Драмы,Зарубежные,Биография',\n",
+       " 'Комедии,Мюзиклы',\n",
+       " 'Комедии,Полнометражные,Зарубежные',\n",
+       " 'Мелодрама,Драма',\n",
+       " 'Драмы,Фантастика',\n",
+       " 'Приключения,Советское кино,Мелодрамы,Для всей семьи',\n",
+       " 'Короткометражки,Комедии',\n",
+       " 'Драмы,Исторические,Зарубежные',\n",
+       " 'Комедии,Мелодрамы,Для всей семьи,Зарубежные',\n",
+       " 'Развлекательные',\n",
+       " 'Русские мультфильмы,Полнометражные,Сказки,Русские,Для детей',\n",
+       " 'Музыкальный,Мелодрама,Драма',\n",
+       " 'Приключения,Комедии,Драмы,Фэнтези,Для всей семьи,Зарубежные',\n",
+       " 'Детективы,Мелодрамы,Русские,Боевики',\n",
+       " 'Комедии,Детективы,Криминал',\n",
+       " 'Военные,Драмы,Мелодрамы,Наши',\n",
+       " 'Детские,Наши',\n",
+       " 'Мистические,Ужасы,Приключения,Фантастика,Зарубежные',\n",
+       " 'Драмы,Исторические,Спорт',\n",
+       " 'Западные мультфильмы,Сериалы,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Приключения,Детективы,Триллеры,Наши',\n",
+       " 'Драмы,Зарубежные,Спорт',\n",
+       " 'Триллеры',\n",
+       " 'Приключения,Детективы,Комедии,Советское кино,Для всей семьи',\n",
+       " 'Семейные,Комедии,Фильмы,Фантастика,Мелодрамы,Детские,Наши',\n",
+       " 'Ужасы,Триллеры,Фантастика,Боевики,Зарубежные',\n",
+       " 'Мелодрамы',\n",
+       " 'Короткометражные,Зарубежные',\n",
+       " 'Драмы,Для всей семьи,Спорт',\n",
+       " 'Военные,Приключения,Русские',\n",
+       " 'Фантастика,Зарубежные',\n",
+       " 'Приключения,Советское кино,Мелодрамы,Русские',\n",
+       " 'Драмы,Криминал,Наши',\n",
+       " 'Исторический,Драма',\n",
+       " 'Полнометражные,Наши',\n",
+       " 'Русские,Для взрослых',\n",
+       " 'Детективы',\n",
+       " 'Фэнтези,Боевики,Зарубежные',\n",
+       " 'Ужасы,Боевики,Зарубежные',\n",
+       " 'Драмы,Исторические,Русские',\n",
+       " 'Мелодрамы,Зарубежные',\n",
+       " 'Приключения,Триллеры,Драмы,Боевики,Зарубежные',\n",
+       " 'Комедии,Драмы,Наши',\n",
+       " 'Драмы,Зарубежные,Биография',\n",
+       " 'Развлекательные,Игры',\n",
+       " 'Триллеры,Зарубежные',\n",
+       " 'Приключения,Полнометражные,Западные мультфильмы,Сказки,Для детей,Зарубежные',\n",
+       " 'Комедии,Наши',\n",
+       " 'Ужасы,Драмы,Фантастика',\n",
+       " 'Драмы,Исторические,Криминал,Зарубежные,Биография',\n",
+       " 'Советское кино,Фильмы,Фэнтези,Русские,Для всей семьи,Для детей',\n",
+       " 'Ужасы,Комедии,Фантастика',\n",
+       " 'Фантастика,Мелодрамы,Наши',\n",
+       " 'Русские мультфильмы,Для всей семьи,Для детей',\n",
+       " 'Про животных,Полнометражные,Сказки,Русские,Советские,Для детей',\n",
+       " 'Наши',\n",
+       " 'Комедии,Мелодрамы',\n",
+       " 'Военные,Советское кино,Драмы,Для всей семьи',\n",
+       " 'Ужасы,Для взрослых,Зарубежные',\n",
+       " 'Комедии,Детективы,Наши',\n",
+       " 'Советские,Для детей,Хочу всё знать',\n",
+       " 'Приключения,Триллеры,Боевики,Зарубежные',\n",
+       " 'Комедия,Драма',\n",
+       " 'Приключения,Исторические,Боевики,Зарубежные',\n",
+       " 'Комедии,Криминал',\n",
+       " 'Ужасы,Приключения,Фантастика,Зарубежные',\n",
+       " 'Приключения,Комедии,Драмы,Фантастика,Боевики,Зарубежные',\n",
+       " 'Драмы,Наши,Спортивные',\n",
+       " 'Комедии,Фантастика,Наши',\n",
+       " 'Приключения,Триллеры,Драмы',\n",
+       " 'Военные,Приключения,Драмы',\n",
+       " 'Русские мультфильмы,Комедии,Русские,Сериалы,Для всей семьи,Для детей,Развивающие,Хочу всё знать',\n",
+       " 'Драмы,Мелодрамы,Мюзиклы',\n",
+       " 'Семейные,Приключения,Комедии',\n",
+       " 'Мультфильмы,Короткометражные,Детские,Наши',\n",
+       " 'Приключения,Русские,Фантастические',\n",
+       " 'Мультфильмы,Комедии,Мультсериалы,Детские,Наши',\n",
+       " 'Детективы,Русские,Фантастические',\n",
+       " 'Русские,Советские,Для детей',\n",
+       " 'Драмы,Исторические,Зарубежные,Биография',\n",
+       " 'Драмы,Фантастика,Боевики,Зарубежные',\n",
+       " 'Приключения,Комедии,Фэнтези,Западные мультфильмы,Сериалы,Для всей семьи,Боевик,Для детей',\n",
+       " 'Русские мультфильмы,Про животных,Сказки,Русские,Советские,Для детей',\n",
+       " 'Детективы,Зарубежные',\n",
+       " 'Приключения,Фильмы,Фэнтези,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Приключения',\n",
+       " 'Приключения,Комедии,Для всей семьи,Зарубежные',\n",
+       " 'Военные,Драмы,Мелодрамы',\n",
+       " 'Приключения,Исторические,Зарубежные',\n",
+       " 'Военные,Документальные',\n",
+       " 'Русские,Документальные',\n",
+       " 'Артхаус,Военные,Советское кино,Драмы,Исторические,Мелодрамы',\n",
+       " 'Приключения,Комедии,Боевики',\n",
+       " 'Военные,Приключения,Драмы,Исторические,Русские,Для всей семьи',\n",
+       " 'Триллеры,Драмы,Фантастика,Боевики,Зарубежные',\n",
+       " 'Семейные,Фантастика,Наши,Музыкальные',\n",
+       " 'Фантастика,Мелодрамы,Зарубежные',\n",
+       " 'Приключения,Триллеры,Драмы,Исторические,Боевики,Криминал',\n",
+       " 'Русские мультфильмы,Про животных,Русские,Сериалы,Для детей,Развивающие',\n",
+       " 'Драмы,Мелодрамы,Биография',\n",
+       " 'Полнометражные,Западные мультфильмы,Сказки,Для детей,Зарубежные',\n",
+       " 'Комедии,Для всей семьи,Зарубежные',\n",
+       " 'Детективы,Русские',\n",
+       " 'Военные,Комедии,Советское кино,Музыкальные',\n",
+       " 'Ужасы,Приключения,Драмы,Зарубежные',\n",
+       " 'Мультсериалы',\n",
+       " 'Детективы,Триллеры,Драмы,Мелодрамы,Наши',\n",
+       " 'Ужасы,Комедии,Боевики,Зарубежные',\n",
+       " 'Ужасы,Комедии,Для взрослых,Зарубежные',\n",
+       " 'Приключения,Советское кино,Триллеры,Боевики',\n",
+       " 'Полнометражные,Фантастика,Зарубежные',\n",
+       " 'Военные,Советское кино,Драмы,Исторические,Для всей семьи,Биография',\n",
+       " 'Мультфильмы,Комедии,Полнометражные,Наши',\n",
+       " 'Приключения,Комедии,Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Детективы,Триллеры,Драмы,Фантастика,Боевики,Зарубежные',\n",
+       " 'Комедии,Советское кино,Фэнтези,Мелодрамы,Русские,Для всей семьи',\n",
+       " 'Драмы,Исторические,Русские,Документальные',\n",
+       " 'Комедии,Для детей',\n",
+       " 'Ужасы,Детективы,Триллеры',\n",
+       " 'Русские мультфильмы,Русские,Советские,Для детей',\n",
+       " 'Мелодрама,Фэнтези, сказка,Криминал,Триллер,Драма',\n",
+       " 'Русские мультфильмы,Сериалы,Для детей,Развивающие,Хочу всё знать,Зарубежные',\n",
+       " 'Артхаус,Триллеры,Боевики,Зарубежные',\n",
+       " 'Детективы,Мелодрамы,Русские',\n",
+       " 'Мультфильмы,Приключения,Полнометражные,Наши',\n",
+       " 'Мистические,Триллеры,Русские,Фантастические',\n",
+       " 'Мультфильмы,Приключения,Полнометражные,Детские,Наши',\n",
+       " 'Научная фантастика,Криминал,Триллер,Драма',\n",
+       " 'Приключения,Детективы,Русские',\n",
+       " 'Комедии,Триллеры,Боевики,Криминал,Спорт',\n",
+       " 'Приключения,Мелодрамы,Русские',\n",
+       " 'Исторический,Криминал,Драма',\n",
+       " 'Комедии,Драмы,Мелодрамы,Русские,Для всей семьи',\n",
+       " 'Приключения,Фантастика,Зарубежные',\n",
+       " 'Мелодрамы,Криминал',\n",
+       " 'Для взрослых,Зарубежные',\n",
+       " 'Драмы,Боевики,Криминал,Спорт',\n",
+       " 'Семейные,Приключения,Фильмы,Для детей,Наши',\n",
+       " 'Комедии,Мелодрамы,Русские,Для всей семьи',\n",
+       " 'Русские мультфильмы,Русские,Сериалы,Для всей семьи,Для детей,Развивающие',\n",
+       " 'Ужасы,Триллеры,Фэнтези,Фантастика,Зарубежные',\n",
+       " 'Приключения,Исторические,Мелодрамы,Боевики,Зарубежные',\n",
+       " 'Советское кино,Фильмы,Драмы,Мелодрамы',\n",
+       " 'Мультфильмы,Мультсериалы,Для детей,Наши',\n",
+       " 'Драмы,Исторические,Мелодрамы,Зарубежные,Биография',\n",
+       " 'Драмы,Мелодрамы,Наши',\n",
+       " 'Семейные,Фантастика,Наши',\n",
+       " 'Детективы,Триллеры,Драмы,Фантастика',\n",
+       " 'Комедии,Драмы',\n",
+       " 'Про животных,Западные мультфильмы,Сериалы,Для детей,Развивающие,Хочу всё знать,Зарубежные',\n",
+       " 'Детективы,Криминал,Наши',\n",
+       " 'Ужасы',\n",
+       " 'Детективы,Драмы,Мелодрамы,Документальные,Зарубежные',\n",
+       " 'Военные,Драмы,Криминал',\n",
+       " 'Комедии,Для всей семьи',\n",
+       " 'Ужасы,Комедии,Мелодрамы,Зарубежные',\n",
+       " 'Полнометражные,Для детей,Зарубежные,Детские песни',\n",
+       " 'Приключения,Драмы,Мелодрамы',\n",
+       " 'Комедии,Фантастика,Русские',\n",
+       " 'Ужасы,Приключения,Фэнтези',\n",
+       " 'Комедии,Русские,Для всей семьи,Для детей',\n",
+       " 'Комедии,Триллеры,Боевики,Зарубежные',\n",
+       " 'Мистические,Ужасы,Приключения,Детективы,Триллеры,Зарубежные',\n",
+       " 'Ужасы,Комедии,Зарубежные',\n",
+       " 'Детективы,Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Военные,Драмы',\n",
+       " 'Приключения,Наши',\n",
+       " 'Приключения,Детективы,Фантастика,Зарубежные',\n",
+       " 'Драмы,Исторические,Русские,Боевики',\n",
+       " 'Комедии,Драмы,Спорт',\n",
+       " 'Семейные,Комедии,Детские,Наши',\n",
+       " 'Драмы,Мелодрамы,Романтические,Русские',\n",
+       " 'Военные,Драмы,Исторические,Русские,Биография',\n",
+       " 'Детективы,Мелодрамы,Романтические,Русские',\n",
+       " 'Приключения,Боевики,Наши',\n",
+       " 'Мистические,Ужасы,Триллеры,Зарубежные',\n",
+       " 'Военные,Драмы,Исторические,Зарубежные',\n",
+       " 'Приключения,Исторические,Биография',\n",
+       " 'Триллеры,Исторические,Боевики,Зарубежные',\n",
+       " 'Комедии,Зарубежные,Спорт',\n",
+       " 'Мультсериалы,Для детей',\n",
+       " 'Познавательные,Охота и рыбалка',\n",
+       " 'Детективы,Драмы,Триллеры,Криминал,Зарубежные',\n",
+       " 'Приключения,Триллеры,Фэнтези',\n",
+       " 'Детективы,Драмы,Боевики,Зарубежные',\n",
+       " 'Драмы,Зарубежные,Спортивные',\n",
+       " 'Военные,Драмы,Наши',\n",
+       " 'Драмы,Экранизации,Русские',\n",
+       " 'Ужасы,Приключения,Комедии,Зарубежные',\n",
+       " 'Приключения,Комедии,Мелодрамы,Зарубежные',\n",
+       " 'Семейные,Зарубежные',\n",
+       " 'Фантастика,Мюзиклы',\n",
+       " 'Детективы,Триллеры,Фантастика,Зарубежные',\n",
+       " 'Драмы,Вестерн,Зарубежные',\n",
+       " 'Приключения,Про животных,Комедии,Фэнтези,Западные мультфильмы,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Приключения,Комедии,Советское кино,Мелодрамы,Музыкальные',\n",
+       " 'Русские,Сериалы,Для всей семьи',\n",
+       " 'Артхаус,Приключения,Комедии,Зарубежные',\n",
+       " 'Драмы,Фантастика,Мелодрамы,Зарубежные',\n",
+       " 'Криминал,Наши',\n",
+       " 'Комедии,Русские,Музыкальные',\n",
+       " 'Военные,Драмы,Боевики,Зарубежные',\n",
+       " 'Приключения,Детективы,Исторические,Русские,Боевики',\n",
+       " 'Комедии,Советское кино',\n",
+       " 'Комедии,Советское кино,Драмы,Мелодрамы',\n",
+       " 'Мистические,Ужасы,Русские',\n",
+       " 'Приключения,Фантастика,Боевики',\n",
+       " 'Детские,Зарубежные',\n",
+       " 'Мистические,Ужасы,Детективы,Триллеры,Русские',\n",
+       " 'Западные мультфильмы,Сериалы,Для детей,Зарубежные',\n",
+       " 'Драмы,Мелодрамы,Криминал',\n",
+       " 'Комедии,Драмы,Спортивные',\n",
+       " 'Комедии,Зарубежные,Спортивные',\n",
+       " 'Семейные,Приключения,Фантастика,Зарубежные',\n",
+       " 'Приключения,Боевики',\n",
+       " 'Военные,Советское кино,Драмы',\n",
+       " 'Русские мультфильмы,Сериалы,Для всей семьи,Для детей,Развивающие',\n",
+       " 'Мультфильмы,Союзмультфильм,Наши',\n",
+       " 'Приключения,Комедии,Западные мультфильмы,Для всей семьи,Для детей',\n",
+       " 'Артхаус,Триллеры,Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Семейные,Комедии,Исторические,Наши',\n",
+       " 'Семейные,Фильмы,Фантастика,Для детей,Наши',\n",
+       " 'Драмы,Боевики,Зарубежные',\n",
+       " 'Драмы,Русские,Для всей семьи,Спорт',\n",
+       " 'Приключения,Комедии,Драмы',\n",
+       " 'Военные,Советское кино,Исторические',\n",
+       " 'Семейные,Приключения,Комедии,Фильмы,Фантастика,Детские,Наши',\n",
+       " 'Комедии,Драмы,Для всей семьи',\n",
+       " 'Ужасы,Триллеры,Для взрослых,Зарубежные',\n",
+       " 'Ужасы,Детективы,Триллеры,Драмы,Зарубежные',\n",
+       " 'Приключения,Боевики,Криминал,Наши',\n",
+       " 'Драмы,Криминал,Зарубежные',\n",
+       " 'Короткометражки,Комедии,Драмы,Фэнтези',\n",
+       " 'Приключения,Советское кино,Для всей семьи,Боевики',\n",
+       " 'Комедии,Полнометражные,Для всей семьи',\n",
+       " 'Военные,Детективы,Наши',\n",
+       " 'Комедии,Боевики,Зарубежные',\n",
+       " 'Комедии,Советское кино,Мелодрамы,Русские,Для всей семьи',\n",
+       " 'Детективы,Мелодрамы,Криминал',\n",
+       " 'Детективы,Комедии,Мелодрамы,Зарубежные',\n",
+       " 'Полнометражные,Западные мультфильмы,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Реалити-шоу',\n",
+       " 'Советские,Для детей',\n",
+       " 'Русские мультфильмы,Русские,Сериалы,Для детей,Развивающие',\n",
+       " 'Ужасы,Комедии,Детективы,Триллеры,Драмы,Зарубежные',\n",
+       " 'Приключения,Комедии,Фэнтези',\n",
+       " 'Детективы,Комедии,Драмы,Русские',\n",
+       " 'Ужасы,Фантастика,Зарубежные',\n",
+       " 'Приключения,Для всей семьи',\n",
+       " 'Анимация,Для взрослых,Зарубежные',\n",
+       " 'Семейные,Приключения,Наши,Мюзиклы',\n",
+       " 'Военные,Детективы,Драмы',\n",
+       " 'Юмористические,Комедии',\n",
+       " 'Фэнтези',\n",
+       " 'Военные',\n",
+       " 'Для всей семьи,Хочу всё знать,Зарубежные',\n",
+       " 'Приключения,Полнометражные',\n",
+       " 'Триллеры,Наши',\n",
+       " 'Русские мультфильмы,Русские,Сериалы,Для всей семьи,Для детей',\n",
+       " 'Русские,Советские,Для взрослых',\n",
+       " 'Про животных,Русские,Советские,Для детей',\n",
+       " 'Мультфильмы,Для детей,Зарубежные',\n",
+       " 'Документальные,Зарубежные,Музыкальные',\n",
+       " 'Семейные,Драмы,Наши',\n",
+       " 'Приключения,Полнометражные,Наши',\n",
+       " 'Приключения,Драмы,Исторические,Зарубежные',\n",
+       " 'Драмы,Русские,Боевики,Спорт',\n",
+       " 'Приключения,Детективы,Фэнтези,Боевики,Зарубежные',\n",
+       " 'Драмы,Исторические,Мелодрамы,Русские,Биография',\n",
+       " 'Артхаус,Советское кино,Драмы',\n",
+       " 'Военные,Комедии,Драмы,Русские',\n",
+       " 'Комедии',\n",
+       " 'Детективы,Триллеры,Драмы,Фантастика,Боевики,Криминал,Зарубежные',\n",
+       " 'Приключения,Детективы,Триллеры,Фантастика,Боевики,Зарубежные',\n",
+       " 'Комедии,Советское кино,Фильмы,Для всей семьи,Для детей',\n",
+       " 'Драмы,Фэнтези,Фантастика,Зарубежные',\n",
+       " 'Мультфильмы,Мультсериалы,Зарубежные,Для самых маленьких',\n",
+       " 'Детективы,Русские,Боевики',\n",
+       " 'Приключения,Западные мультфильмы,Сериалы,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Мультфильмы,Мультсериалы,Детские,Союзмультфильм,Наши',\n",
+       " 'Приключения,Драмы,Боевики,Наши',\n",
+       " 'Драмы,Биография',\n",
+       " 'Детективы,Триллеры,Романтические,Зарубежные',\n",
+       " 'Познавательные,Документальные',\n",
+       " 'Приключения,Про животных,Западные мультфильмы,Сериалы,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Ужасы,Детективы,Триллеры,Фэнтези',\n",
+       " 'Драмы,Боевики,Криминал',\n",
+       " 'Военные,Комедии,Драмы',\n",
+       " 'Детективы,Драмы,Криминал',\n",
+       " 'Комедии,Для взрослых,Наши',\n",
+       " 'Военные,Драмы,Русские,Боевики',\n",
+       " 'Детективы,Боевики,Криминал,Наши',\n",
+       " 'Полнометражные,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Триллеры,Драмы,Фэнтези,Зарубежные',\n",
+       " 'Семейные,Приключения,Фантастика,Мелодрамы,Документальные,Боевики,Зарубежные',\n",
+       " 'Про животных,Фильмы,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Детективы,Триллеры,Фантастика',\n",
+       " 'Познавательные',\n",
+       " 'Драмы,Русские,Для всей семьи',\n",
+       " 'Семейные,Комедии,Фильмы,Детские,Наши',\n",
+       " 'Русские мультфильмы,Комедии,Русские,Сериалы,Для всей семьи,Для детей,Развивающие',\n",
+       " 'Семейные,Комедии,Драмы,Наши',\n",
+       " 'Драмы,Исторические,Мелодрамы,Зарубежные',\n",
+       " 'Военные,Боевики,Зарубежные',\n",
+       " 'Фэнтези,Мелодрамы,Русские,Для всей семьи',\n",
+       " 'Военные,Приключения,Исторические,Для всей семьи,Боевики,Зарубежные',\n",
+       " 'Русские мультфильмы,Про животных,Для всей семьи,Для детей',\n",
+       " 'Приключения,Боевики,Зарубежные',\n",
+       " 'Драмы,Фантастика,Наши',\n",
+       " 'Мелодрамы,Боевики,Зарубежные',\n",
+       " 'Мультфильмы,Полнометражные,Наши',\n",
+       " 'Ужасы,Комедии,Боевики',\n",
+       " 'Мистические,Ужасы,Детективы,Триллеры,Фантастика,Зарубежные',\n",
+       " 'Ужасы,Приключения,Триллеры,Фантастика,Боевики,Зарубежные',\n",
+       " 'Криминал,Зарубежные',\n",
+       " 'Военные,Драмы,Документальные',\n",
+       " 'Исторический,Военный,Боевик,Драма',\n",
+       " 'Военные,Приключения,Советское кино,Мелодрамы',\n",
+       " 'Детективы,Комедии,Драмы,Криминал,Зарубежные',\n",
+       " 'Криминал,Триллер,Драма',\n",
+       " 'Русские,Боевики,Криминал',\n",
+       " 'Комедии,Мелодрамы,Русские',\n",
+       " 'Ужасы,Зарубежные',\n",
+       " 'Приключения,Русские,Для всей семьи',\n",
+       " 'Семейные,Приключения,Комедии,Фантастика',\n",
+       " 'Комедии,Драмы,Криминал,Зарубежные',\n",
+       " 'Триллеры,Драмы,Русские',\n",
+       " 'Мистические,Ужасы,Приключения,Детективы,Боевики,Зарубежные',\n",
+       " 'Детективы,Советское кино,Триллеры',\n",
+       " 'Триллеры,Драмы,Криминал,Наши',\n",
+       " 'Детективы,Драмы,Наши',\n",
+       " 'Фантастика,Боевики',\n",
+       " 'Научная фантастика,Криминал,Вестерн,Драма',\n",
+       " 'Приключения,Драмы,Зарубежные',\n",
+       " 'Боевики',\n",
+       " 'Детективы,Комедии,Драмы,Зарубежные',\n",
+       " 'Детективы,Драмы,Русские,Боевики,Криминал',\n",
+       " 'Комедии,Мелодрамы,Криминал,Зарубежные',\n",
+       " 'Драма',\n",
+       " 'Мультфильмы,Приключения,Мультсериалы,Для детей,Наши',\n",
+       " 'Военные,Драмы,Криминал,Наши',\n",
+       " 'Приключения,Детективы,Комедии,Русские',\n",
+       " 'Триллеры,Для взрослых,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Драмы',\n",
+       " 'Приключения,Советское кино,Фильмы,Драмы,Для детей',\n",
+       " 'Прочие',\n",
+       " 'Артхаус,Драмы,Экранизации,Мелодрамы,Русские',\n",
+       " 'Семейные,Комедии,Фантастика,Зарубежные',\n",
+       " 'Комедии,Детективы,Боевики,Криминал',\n",
+       " 'Полнометражные,Западные мультфильмы,Аниме,Для детей,Зарубежные',\n",
+       " 'Спортивные',\n",
+       " 'Семейные,Комедии,Фантастика',\n",
+       " 'Военные,Триллеры,Драмы,Исторические,Зарубежные',\n",
+       " 'Мультфильмы,Полнометражные,Союзмультфильм',\n",
+       " 'Мистические,Мелодрамы,Русские',\n",
+       " 'Документальные,Криминал,Зарубежные',\n",
+       " 'Ужасы,Комедии,Триллеры,Наши',\n",
+       " 'Мультфильмы,Короткометражные,Союзмультфильм',\n",
+       " 'Приключения,Советское кино,Фильмы,Фэнтези,Сказки,Для всей семьи,Для детей',\n",
+       " 'Советское кино,Боевики',\n",
+       " 'Драмы,Для взрослых,Зарубежные',\n",
+       " 'Короткометражные,Документальные',\n",
+       " 'Мистические,Приключения,Фантастика,Боевики,Зарубежные',\n",
+       " 'Драмы,Боевики,Криминал,Зарубежные,Спортивные',\n",
+       " 'Ужасы,Детективы,Триллеры,Наши',\n",
+       " 'Приключения,Советское кино,Фильмы,Фэнтези,Сказки,Русские,Для всей семьи,Для детей',\n",
+       " 'Приключения,Детективы,Фильмы,Фэнтези,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Фантастика,Мультсериалы,Зарубежные',\n",
+       " 'Военные,Драмы,Исторические',\n",
+       " 'Комедии,Советское кино,Драмы,Экранизации',\n",
+       " 'Приключения,Драмы',\n",
+       " 'Мультфильмы,Наши',\n",
+       " 'Драмы,Боевики,Наши',\n",
+       " 'Детективы,Триллеры,Драмы,Криминал,Зарубежные',\n",
+       " 'Комедии,Триллеры,Боевики',\n",
+       " 'Детективы,Комедии,Драмы,Фэнтези',\n",
+       " 'Военные,Драмы,Фэнтези,Исторические,Боевики',\n",
+       " 'Триллеры,Фантастика,Зарубежные',\n",
+       " 'Мультфильмы,Комедии,Полнометражные',\n",
+       " 'Мультфильмы,Полнометражные,Наши,Для самых маленьких',\n",
+       " 'Ужасы,Мелодрамы,Боевики,Зарубежные',\n",
+       " 'Приключения,Драмы,Фантастика,Мелодрамы,Наши',\n",
+       " 'Приключения,Русские,Боевики',\n",
+       " 'Детективы,Боевики,Для взрослых,Зарубежные',\n",
+       " 'Ужасы,Комедии,Триллеры,Для взрослых,Зарубежные',\n",
+       " 'Для детей,Зарубежные',\n",
+       " 'Военные,Драмы,Исторические,Мелодрамы,Русские',\n",
+       " 'Западные мультфильмы,Для детей,Зарубежные',\n",
+       " 'Приключения,Комедии,Русские',\n",
+       " 'Ужасы,Детективы,Зарубежные',\n",
+       " 'Драмы,Исторические,Фантастика,Зарубежные',\n",
+       " 'Комедии,Фантастика,Зарубежные',\n",
+       " 'Мистические,Приключения,Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Комедии,Советское кино,Мелодрамы,Для всей семьи,Музыкальные',\n",
+       " 'Семейные,Приключения,Комедии,Боевики,Зарубежные',\n",
+       " 'Детективы,Триллеры,Криминал',\n",
+       " 'Комедии,Советское кино,Русские',\n",
+       " 'Триллеры,Драмы',\n",
+       " 'Мультфильмы,Приключения,Детские,Наши',\n",
+       " 'Триллеры,Драмы,Фантастика,Боевики',\n",
+       " 'Развлекательные,Познавательные,Русские,Для всей семьи,Для детей',\n",
+       " 'Комедии,Драмы,Арт-хаус,Зарубежные',\n",
+       " 'Детективы,Триллеры,Русские,Криминал',\n",
+       " 'Мистические,Ужасы,Триллеры,Русские',\n",
+       " 'Семейные,Документальные,Зарубежные',\n",
+       " 'Приключения,Советское кино,Драмы,Русские',\n",
+       " 'Исторический,Мелодрама,Военный,Боевик,Драма',\n",
+       " 'Комедии,Драмы,Мелодрамы,Наши',\n",
+       " 'Приключения,Комедии,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Детективы,Комедии,Мелодрамы,Русские',\n",
+       " 'Документальные,Зарубежные',\n",
+       " 'Военные,Русские',\n",
+       " 'Ужасы,Приключения,Триллеры,Боевики,Зарубежные',\n",
+       " 'Триллеры,Драмы,Боевики',\n",
+       " 'Артхаус,Советское кино,Драмы,Фантастика',\n",
+       " 'Семейные,Фильмы,Фантастика,Детские,Наши',\n",
+       " 'Познавательные,Документальные,Зарубежные',\n",
+       " 'Про животных,Советские,Для детей',\n",
+       " 'Полнометражные,Для взрослых,Зарубежные',\n",
+       " 'Документальные,Биография',\n",
+       " 'Военные,Наши',\n",
+       " 'Комедии,Для всей семьи,Для детей',\n",
+       " 'Военные,Боевики,Наши',\n",
+       " 'Семейные',\n",
+       " 'Артхаус,Военные,Советское кино,Драмы',\n",
+       " 'Комедии,Русские,Для всей семьи',\n",
+       " 'Комедии,Драмы,Мюзиклы',\n",
+       " 'Драмы,Спортивные',\n",
+       " 'Комедии,Триллеры,Мелодрамы,Боевики',\n",
+       " 'Артхаус,Короткометражки,Русские,Документальные',\n",
+       " 'Приключения,Комедии,Для всей семьи,Боевики,Зарубежные',\n",
+       " 'Мистические,Приключения,Драмы,Триллеры,Зарубежные',\n",
+       " 'Русские мультфильмы,Русские,Сериалы,Для всей семьи,Для детей,Развивающие,Хочу всё знать',\n",
+       " 'Советское кино,Фильмы,Для всей семьи,Для детей',\n",
+       " 'Приключения,Комедии,Фэнтези,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Семейные,Приключения,Фильмы,Драмы,Фантастика,Для детей,Наши',\n",
+       " 'Драмы,Мелодрамы,Музыкальные',\n",
+       " 'Артхаус,Детективы,Триллеры,Драмы,Зарубежные',\n",
+       " 'Мистические,Ужасы,Комедии,Триллеры,Зарубежные',\n",
+       " 'Артхаус,Драмы,Зарубежные',\n",
+       " 'Исторические,Мелодрамы',\n",
+       " 'Русские,Для детей',\n",
+       " 'Семейные,Короткометражные,Комедии,Фильмы,Для детей,Наши',\n",
+       " 'Драмы,Фантастические,Зарубежные',\n",
+       " 'Приключения,Западные мультфильмы,Фантастика,Сериалы,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Советское кино,Драмы',\n",
+       " 'Триллеры,Драмы,Боевики,Криминал,Наши',\n",
+       " 'Драмы,Мелодрамы',\n",
+       " 'Мультфильмы,Детские,Союзмультфильм,Наши',\n",
+       " 'Детективы,Комедии,Боевики,Зарубежные',\n",
+       " 'Мелодрамы,Боевики,Вестерн,Зарубежные',\n",
+       " 'Артхаус,Мелодрамы,Русские',\n",
+       " 'Драмы,Мелодрамы,Документальные,Зарубежные,Биография',\n",
+       " 'Боевики,Криминал,Наши',\n",
+       " 'Западные мультфильмы,Сериалы,Для детей',\n",
+       " 'Русские мультфильмы,Приключения,Про животных,Комедии,Русские,Для всей семьи,Для детей',\n",
+       " 'Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Драмы,Фантастика,Зарубежные',\n",
+       " 'Мультфильмы,Мультсериалы,Наши,Для самых маленьких',\n",
+       " 'Русские мультфильмы,Про животных,Русские,Для всей семьи,Советские,Для детей',\n",
+       " 'Семейные,Комедии,Драмы,Зарубежные',\n",
+       " 'Приключения,Триллеры,Фантастика,Боевики',\n",
+       " 'Детективы,Комедии,Советское кино,Экранизации',\n",
+       " 'Приключения,Фэнтези,Экранизации,Русские,Боевики',\n",
+       " 'Мистические,Приключения,Детективы,Триллеры,Драмы,Зарубежные',\n",
+       " 'Приключения,Комедии,Мелодрамы,Для всей семьи,Зарубежные',\n",
+       " 'Семейные,Приключения,Комедии,Мелодрамы',\n",
+       " 'Комедии,Советское кино,Экранизации,Мелодрамы',\n",
+       " 'Военные,Боевики',\n",
+       " 'Ужасы,Наши',\n",
+       " 'Комедии,Русские,Криминал',\n",
+       " 'Приключения,Зарубежные,Биография',\n",
+       " 'Комедии,Мультсериалы',\n",
+       " 'Русские мультфильмы,Про животных,Русские,Советские,Для детей,Детские песни',\n",
+       " 'Ужасы,Приключения,Драмы,Вестерн',\n",
+       " 'Приключения,Комедии,Фантастика,Для всей семьи,Боевик',\n",
+       " 'Комедии,Мелодрамы,Наши,Мюзиклы',\n",
+       " 'Эротика,Комедии,Драмы,Мелодрамы,Зарубежные',\n",
+       " 'General',\n",
+       " 'Приключения,Детективы,Комедии,Драмы,Зарубежные',\n",
+       " 'Приключения,Детективы,Криминал,Наши',\n",
+       " 'Драмы,Мелодрамы,Зарубежные,Музыкальные',\n",
+       " 'Исторический,Документальный,Драма',\n",
+       " 'Приключения,Драмы,Боевики',\n",
+       " 'Детективы,Триллеры,Боевики,Зарубежные',\n",
+       " 'Криминал',\n",
+       " 'Детективы,Мелодрамы,Русские,Криминал',\n",
+       " 'Комедии,Западные мультфильмы,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Мультфильмы,Мультфильмы в 3D,Полнометражные,Для детей,Зарубежные',\n",
+       " 'Семейные,Фильмы,Наши',\n",
+       " 'Драмы,Зарубежные,Биография,Спорт',\n",
+       " 'Ужасы,Фантастика,Боевики',\n",
+       " 'Фантастика,Боевики,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Боевики,Зарубежные',\n",
+       " 'Приключения,Комедии,Советское кино,Мелодрамы,Русские,Для всей семьи,Музыкальные',\n",
+       " 'Ужасы,Приключения,Комедии,Триллеры,Фантастика,Боевики,Зарубежные',\n",
+       " 'Комедии,Драмы,Фантастика,Зарубежные',\n",
+       " 'Ужасы,Приключения,Боевики,Зарубежные',\n",
+       " 'Военные,Советское кино,Драмы,Русские',\n",
+       " 'Мультфильмы,Зарубежные',\n",
+       " 'Приключения,Про животных,Полнометражные,Западные мультфильмы,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Приключения,Комедии,Советское кино,Экранизации',\n",
+       " 'Мультфильмы,Комедии,Полнометражные,Мультсериалы,Зарубежные',\n",
+       " 'Артхаус,Военные,Советское кино,Исторические,Документальные',\n",
+       " 'Комедии,Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Фэнтези,Русские,Для детей',\n",
+       " 'Мистические,Приключения,Боевики,Зарубежные',\n",
+       " 'Драмы,Исторические,Мелодрамы',\n",
+       " 'Приключения,Для детей,Зарубежные',\n",
+       " 'Фантастика,Документальные,Зарубежные',\n",
+       " 'Боевики,Наши',\n",
+       " 'Драмы,Исторические,Наши',\n",
+       " 'Триллеры,Криминал,Зарубежные',\n",
+       " 'Семейные,Фильмы,Для детей,Наши',\n",
+       " 'Документальный',\n",
+       " 'Триллеры,Русские',\n",
+       " 'Приключения,Триллеры,Русские',\n",
+       " 'Военные,Приключения,Советское кино,Драмы',\n",
+       " 'Военные,Советское кино,Драмы,Экранизации',\n",
+       " 'Приключения,Советское кино,Драмы,Экранизации',\n",
+       " 'Драмы,Боевики,Криминал,Зарубежные',\n",
+       " 'Драмы,Мелодрамы,Зарубежные,Биография',\n",
+       " 'Романтические,Зарубежные',\n",
+       " 'Фантастика,Наши',\n",
+       " 'Сказки,Русские,Советские,Для детей',\n",
+       " 'Русские мультфильмы,Сказки,Русские,Советские,Для детей',\n",
+       " 'Драмы,Русские,Документальные',\n",
+       " 'Ужасы,Советское кино,Драмы,Экранизации',\n",
+       " 'Ужасы,Триллеры,Мелодрамы,Зарубежные',\n",
+       " 'Приключения,Детективы,Наши',\n",
+       " 'Приключения,Мультсериалы,Детские,Зарубежные',\n",
+       " 'Детективы,Комедии,Русские',\n",
+       " 'Мультсериалы,Наши',\n",
+       " 'Русские мультфильмы,Полнометражные,Русские,Для детей',\n",
+       " 'Детективы,Драмы,Мелодрамы,Русские,Боевики',\n",
+       " 'Познавательные,Русские,Для всей семьи,Для детей',\n",
+       " 'Приключения,Мультсериалы,Зарубежные',\n",
+       " 'Приключения,Комедии,Драмы,Зарубежные',\n",
+       " 'Приключения,Комедии,Триллеры,Боевики,Криминал,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Криминал',\n",
+       " 'Военные,Советское кино,Драмы,Исторические',\n",
+       " 'Документальные,Наши',\n",
+       " 'Комедии,Мелодрамы,Криминал',\n",
+       " 'Детективы,Триллеры,Драмы,Боевики,Зарубежные',\n",
+       " 'Триллеры,Мелодрамы,Боевики,Криминал',\n",
+       " 'Детективы,Триллеры,Фэнтези,Зарубежные',\n",
+       " 'Триллеры,Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Мультфильмы,Мультсериалы,Детские,Наши',\n",
+       " 'Западные мультфильмы,Сказки,Сериалы,Для детей,Зарубежные',\n",
+       " 'Боевики,Криминал,Зарубежные',\n",
+       " 'Комедии,Триллеры,Зарубежные',\n",
+       " 'Полнометражные,Зарубежные',\n",
+       " 'Комедии,Западные мультфильмы,Сериалы,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Детективы,Боевики',\n",
+       " 'Эротика,Комедии,Зарубежные',\n",
+       " 'Комедии,Боевики,Криминал',\n",
+       " 'Полнометражные,Для детей,Зарубежные',\n",
+       " 'Русские мультфильмы,Русские,Советские,Для детей,Детские песни',\n",
+       " 'Мистические,Детективы,Триллеры,Зарубежные',\n",
+       " 'Триллеры,Боевики,Зарубежные',\n",
+       " 'Приключения,Мультсериалы',\n",
+       " 'Военные,Исторические,Мелодрамы,Романтические,Русские,Боевики',\n",
+       " 'Ужасы,Триллеры,Драмы,Криминал',\n",
+       " 'Приключения,Документальные,Зарубежные',\n",
+       " 'Русские мультфильмы,Сказки,Русские,Для детей',\n",
+       " 'Детективы,Триллеры,Драмы,Вестерн,Криминал,Зарубежные',\n",
+       " 'Военные,Драмы,Исторические,Наши',\n",
+       " 'О здоровье',\n",
+       " 'Русские мультфильмы,Русские,Сериалы,Для детей',\n",
+       " 'Мелодрамы,Романтические,Русские',\n",
+       " 'Детективы,Триллеры',\n",
+       " 'Детективы,Триллеры,Драмы,Зарубежные',\n",
+       " 'Приключения,Триллеры,Русские,Фантастические',\n",
+       " 'Комедии,Триллеры,Драмы,Зарубежные',\n",
+       " 'Военные,Драмы,Мелодрамы,Русские,Боевики',\n",
+       " 'Приключения,Фантастика,Мелодрамы,Зарубежные',\n",
+       " 'Боевики,Криминал',\n",
+       " 'Драмы,Криминал',\n",
+       " 'Полнометражные,Западные мультфильмы,Для детей,Для взрослых,Зарубежные',\n",
+       " 'Про животных,Западные мультфильмы,Для детей,Зарубежные',\n",
+       " 'Детективы,Русские,Боевики,Криминал',\n",
+       " 'Мультфильмы,Приключения,Детские,Союзмультфильм,Наши',\n",
+       " 'Военные,Приключения,Драмы,Зарубежные',\n",
+       " 'Драмы,Исторические,Биография',\n",
+       " 'Приключения,Фантастика,Мелодрамы,Боевики,Зарубежные',\n",
+       " 'Приключения,Детективы,Драмы,Фантастика,Мелодрамы,Боевики',\n",
+       " 'Исторические,Документальные,Зарубежные,Биография',\n",
+       " 'Семейные,Комедии,Наши',\n",
+       " 'Развлекательные,Русские',\n",
+       " 'Детективы,Мелодрамы,Зарубежные',\n",
+       " 'Приключения,Комедии,Мюзиклы',\n",
+       " 'Для взрослых,Криминал,Зарубежные',\n",
+       " 'Приключения,Триллеры,Боевики',\n",
+       " 'Научная фантастика,Мелодрама,Комедия,Драма',\n",
+       " 'Артхаус,Эротика,Триллеры,Драмы,Зарубежные',\n",
+       " 'Документальные,Зарубежные,Биография',\n",
+       " 'Приключения,Советское кино,Фильмы,Экранизации,Для детей',\n",
+       " 'Драмы,Арт-хаус,Зарубежные',\n",
+       " 'Детективы,Романтические,Русские',\n",
+       " 'Ужасы,Комедии,Фантастика,Боевики,Зарубежные',\n",
+       " 'Мистические,Ужасы,Зарубежные',\n",
+       " 'Мелодрамы,Боевики,Криминал',\n",
+       " 'Триллеры,Драмы,Русские,Боевики,Биография',\n",
+       " 'Приключения,Для всей семьи,Документальные,Зарубежные',\n",
+       " 'Артхаус,Комедии,Советское кино,Мелодрамы',\n",
+       " 'Анимация,Для взрослых,Наши',\n",
+       " 'Комедии,Драмы,Фантастика',\n",
+       " 'Военные,Драмы,Русские',\n",
+       " 'Ужасы,Русские',\n",
+       " 'Комедии,Мелодрамы,Романтические,Русские',\n",
+       " 'Приключения,Фэнтези,Зарубежные',\n",
+       " 'Развлекательные,Для всей семьи,Зарубежные,Музыкальные',\n",
+       " 'Триллеры,Фантастика,Боевики,Криминал,Зарубежные',\n",
+       " 'Драмы,Русские',\n",
+       " 'Передачи,Для детей,Наши',\n",
+       " 'Мультфильмы,Полнометражные,Детские,Наши',\n",
+       " 'Юмористические',\n",
+       " 'Мистические,Детективы,Фильмы,Триллеры,Русские',\n",
+       " 'Развлекательные,Познавательные,Русские,Документальные',\n",
+       " 'Детские',\n",
+       " 'Приключения,Советское кино,Русские',\n",
+       " 'Советское кино,Драмы,Русские,Биография',\n",
+       " 'Драмы,Исторические,Документальные',\n",
+       " 'Приключения,Комедии,Советское кино,Фантастика',\n",
+       " 'Военные,Исторические,Зарубежные',\n",
+       " 'Фильмы,Фантастика,Зарубежные',\n",
+       " 'Боевики,Зарубежные',\n",
+       " 'Приключения,Комедии,Полнометражные,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Познавательные,Для всей семьи,Документальные,Зарубежные',\n",
+       " 'Мелодрамы,Русские,Для всей семьи',\n",
+       " 'Военный,Драма',\n",
+       " 'Приключения,Мелодрамы,Зарубежные',\n",
+       " 'Военные,Приключения,Триллеры,Боевики,Зарубежные',\n",
+       " 'Военные,Приключения,Комедии,Драмы,Русские',\n",
+       " 'Ужасы,Триллеры',\n",
+       " 'Триллеры,Фантастика,Боевики',\n",
+       " 'Ужасы,Фэнтези,Мелодрамы,Зарубежные',\n",
+       " 'Приключения,Комедии,Наши',\n",
+       " 'Ужасы,Комедия',\n",
+       " 'Боевик,Триллер,Драма',\n",
+       " 'Исторические,Документальные,Зарубежные',\n",
+       " 'Детективы,Русские,Криминал',\n",
+       " 'Драмы,Исторические,Спортивные',\n",
+       " 'Мультсериалы,Наши,Для самых маленьких',\n",
+       " 'Военные,Детективы,Исторические,Русские',\n",
+       " 'Приключения,Фэнтези,Фантастика,Экранизации,Для всей семьи,Зарубежные',\n",
+       " 'Комедии,Для взрослых,Зарубежные',\n",
+       " 'Приключения,Комедии,Вестерн',\n",
+       " 'Приключения,Триллеры,Драмы,Фантастика,Зарубежные',\n",
+       " 'Комедии,Фэнтези,Зарубежные',\n",
+       " 'Триллеры,Боевики,Криминал',\n",
+       " 'Драмы,Для всей семьи,Документальные,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Драмы,Зарубежные',\n",
+       " 'Мультсериалы,Для детей,Зарубежные',\n",
+       " 'Развлекательные,Познавательные,Русские',\n",
+       " 'Артхаус,Советское кино,Драмы,Фантастика,Экранизации',\n",
+       " 'Триллеры,Фантастика,Мелодрамы,Боевики,Зарубежные',\n",
+       " 'Комедии,Драмы,Для взрослых,Зарубежные',\n",
+       " 'Семейные,Комедии,Зарубежные',\n",
+       " 'Военные,Драмы,Зарубежные',\n",
+       " 'Русские мультфильмы,Приключения,Русские,Сериалы,Для всей семьи,Для детей',\n",
+       " 'Мультфильмы,Комедии,Полнометражные,Зарубежные',\n",
+       " 'Военные,Мелодрамы,Русские',\n",
+       " 'Драмы,Русские,Биография',\n",
+       " 'Приключения,Исторические,Боевики',\n",
+       " 'Эротика,Комедии,Боевики,Зарубежные',\n",
+       " 'Русские мультфильмы,Приключения,Комедии,Русские,Сериалы,Для всей семьи,Для детей',\n",
+       " 'Приключения,Комедии,Фэнтези,Полнометражные,Для всей семьи,Зарубежные',\n",
+       " 'Русские мультфильмы,Русские,Советские,Для детей,Для взрослых',\n",
+       " 'Ужасы,Комедии,Фантастика,Зарубежные',\n",
+       " 'Детективы,Фантастика,Боевики,Зарубежные',\n",
+       " 'Мистические,Ужасы,Триллеры',\n",
+       " 'Мистические,Фантастика,Зарубежные',\n",
+       " 'Приключения,Комедии',\n",
+       " 'Комедии,Арт-хаус,Зарубежные',\n",
+       " 'Приключения,Комедии,Полнометражные,Русские,Для всей семьи,Для детей',\n",
+       " 'Ужасы,Детективы,Триллеры,Драмы',\n",
+       " 'Приключения,Триллеры,Зарубежные',\n",
+       " 'Советское кино,Фильмы,Для детей',\n",
+       " 'Советское кино,Фильмы,Для всей семьи,Боевики',\n",
+       " 'Приключения,Комедии,Мелодрамы,Наши',\n",
+       " 'Комедии,Боевики',\n",
+       " 'Исторический,Драма,Биография',\n",
+       " 'Мелодрамы,Русские',\n",
+       " 'Советское кино,Мелодрамы',\n",
+       " 'Триллеры,Драмы,Криминал',\n",
+       " 'Мистические,Триллеры,Драмы,Фэнтези,Экранизации,Зарубежные',\n",
+       " 'Исторические,Русские,Документальные',\n",
+       " 'Триллеры,Драмы,Мелодрамы',\n",
+       " 'Сказки,Русские,Для детей',\n",
+       " 'Приключения,Фэнтези,Боевики',\n",
+       " 'Приключения,Детективы,Триллеры,Боевики,Зарубежные',\n",
+       " 'Про животных,Комедии,Фильмы,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Приключения,Советское кино,Для всей семьи,Для детей',\n",
+       " 'Приключения,Исторические,Зарубежные,Биография',\n",
+       " 'Мультфильмы,Короткометражные,Союзмультфильм,Наши',\n",
+       " 'Мультфильмы,Мультсериалы,Союзмультфильм,Для самых маленьких',\n",
+       " 'Военные,Приключения,Драмы,Исторические,Зарубежные',\n",
+       " 'Приключения,Фантастика,Мелодрамы,Боевики',\n",
+       " 'Приключения,Фэнтези,Боевики,Зарубежные',\n",
+       " 'Приключения,Комедии,Русские,Для всей семьи,Для детей',\n",
+       " 'Приключения,Фэнтези,Полнометражные,Западные мультфильмы,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Комедии,Криминал,Наши',\n",
+       " 'Приключения,Драмы,Боевики,Криминал,Наши',\n",
+       " 'Юмористические,Передачи,Детские',\n",
+       " 'Для самых маленьких',\n",
+       " 'Детективы,Драмы,Зарубежные',\n",
+       " 'Комедии,Наши,Мюзиклы',\n",
+       " 'Западные мультфильмы,Сериалы,Для детей,Развивающие,Зарубежные',\n",
+       " 'Мистические,Приключения,Детективы,Триллеры,Драмы,Фантастика,Зарубежные',\n",
+       " 'Русские мультфильмы,Про животных,Русские,Советские,Для детей,Хочу всё знать',\n",
+       " 'Военные,Исторические,Документальные',\n",
+       " 'Ужасы,Триллеры,Драмы,Фэнтези,Фантастика,Зарубежные',\n",
+       " 'Комедии,Зарубежные',\n",
+       " 'Криминал,Драма',\n",
+       " 'Приключения,Комедии,Фэнтези,Для всей семьи',\n",
+       " 'Мистические,Комедии,Триллеры,Русские',\n",
+       " 'Комедии,Мелодрамы,Боевики,Зарубежные',\n",
+       " 'Триллеры,Драмы,Наши',\n",
+       " 'Артхаус,Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Про животных,Западные мультфильмы,Сериалы,Для детей,Зарубежные',\n",
+       " 'Русские мультфильмы,Русские,Сериалы,Для всей семьи,Для детей,Детские песни',\n",
+       " 'Драмы,Наши',\n",
+       " 'Детективы,Комедии,Советское кино',\n",
+       " 'Мультфильм',\n",
+       " 'Приключения,Про животных,Западные мультфильмы,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Комедии,Советское кино,Мелодрамы,Русские',\n",
+       " 'Мультфильмы,Мультсериалы,Детские,Зарубежные',\n",
+       " 'Триллеры,Фантастика,Наши',\n",
+       " 'Мистические,Ужасы,Детективы,Триллеры,Зарубежные',\n",
+       " 'Приключения,Фантастические,Зарубежные',\n",
+       " 'Драмы,Исторические,Мелодрамы,Русские',\n",
+       " 'Мультфильмы,Полнометражные,Союзмультфильм,Наши',\n",
+       " 'Детективы,Криминал',\n",
+       " 'Драмы,Фантастика,Зарубежные',\n",
+       " 'Ужасы,Комедии',\n",
+       " 'Ужасы,Для взрослых,Фильмы в 3D',\n",
+       " 'Драмы,Русские,Боевики',\n",
+       " 'Семейные,Приключения,Комедии,Наши',\n",
+       " 'Комедии,Фантастика,Для взрослых',\n",
+       " 'Военные,Триллеры,Боевики',\n",
+       " 'Триллеры,Мелодрамы,Боевики,Зарубежные',\n",
+       " 'Приключения,Детективы,Комедии,Русские,Для всей семьи',\n",
+       " 'Мультфильмы,Детские,Наши',\n",
+       " 'Военные,Драмы,Боевики',\n",
+       " 'Ужасы,Триллеры,Криминал,Зарубежные',\n",
+       " 'Драмы,Фэнтези,Исторические,Зарубежные,Биография',\n",
+       " 'Исторический',\n",
+       " 'Мультсериалы,Зарубежные',\n",
+       " 'Военные,Триллеры,Боевики,Зарубежные',\n",
+       " 'Детективы,Триллеры,Драмы,Фантастика,Зарубежные',\n",
+       " 'Исторические,Познавательные,Документальные',\n",
+       " 'Мистические,Ужасы,Детективы,Зарубежные',\n",
+       " 'Приключения,Советские,Для детей',\n",
+       " 'Мистические,Ужасы,Детективы,Триллеры,Драмы,Зарубежные',\n",
+       " 'Приключения,Драмы,Фантастика,Боевики,Зарубежные',\n",
+       " 'Триллеры,Драмы,Боевики,Криминал,Зарубежные,Биография',\n",
+       " 'Детективы,Фантастика,Русские,Боевики',\n",
+       " 'Русские мультфильмы,Советские,Для детей',\n",
+       " 'Приключения,Триллеры,Драмы,Фантастика,Арт-хаус,Зарубежные',\n",
+       " 'Военные,Приключения,Комедии,Советское кино,Драмы,Мелодрамы,Боевики',\n",
+       " 'Западные мультфильмы,Сериалы,Аниме,Для детей,Зарубежные',\n",
+       " 'Комедии,Драмы,Мелодрамы,Арт-хаус,Зарубежные',\n",
+       " 'Приключения,Триллеры,Драмы,Наши',\n",
+       " 'Эротика,Зарубежные',\n",
+       " 'Приключения,Комедии,Криминал',\n",
+       " 'Драмы,Боевики,Вестерн,Зарубежные',\n",
+       " 'Мистические,Ужасы',\n",
+       " 'Мультфильмы,Полнометражные,Зарубежные,Для самых маленьких',\n",
+       " 'Семейные,Приключения,Фильмы,Драмы,Фантастика,Мелодрамы,Детские,Наши',\n",
+       " 'Драмы,Мелодрамы,Русские',\n",
+       " 'Комедии,Фантастика,Мелодрамы,Наши',\n",
+       " 'Полнометражные,Западные мультфильмы,Для детей,Зарубежные',\n",
+       " 'Детективы,Драмы,Боевики',\n",
+       " 'Познавательные,Русские,Для всей семьи,Для детей,Хочу всё знать,Спорт',\n",
+       " 'Ужасы,Триллеры,Фантастика,Зарубежные',\n",
+       " 'Русские мультфильмы,Про животных,Русские,Сериалы,Для всей семьи,Для детей',\n",
+       " 'Комедии,Триллеры,Драмы',\n",
+       " 'Мелодрамы,Русские,Криминал,Спорт',\n",
+       " 'Артхаус,Мистические,Драмы,Русские',\n",
+       " 'Семейные,Комедии,Драмы',\n",
+       " 'Мультфильмы,Приключения,Комедии,Полнометражные,Наши',\n",
+       " 'Приключения,Комедии,Фильмы,Фэнтези,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Фантастика,Русские,Боевики',\n",
+       " 'Мистические,Ужасы,Триллеры,Фантастика,Зарубежные',\n",
+       " 'Детективы,Триллеры,Фантастика,Боевики,Зарубежные',\n",
+       " 'Драмы,Русские,Криминал',\n",
+       " 'Триллеры,Драмы,Фантастика,Наши',\n",
+       " 'Приключения,Комедии,Зарубежные',\n",
+       " 'Детективы,Триллеры,Зарубежные',\n",
+       " 'Приключения,Триллеры,Драмы,Зарубежные',\n",
+       " 'Семейные,Комедии,Фильмы,Драмы,Для детей,Наши',\n",
+       " 'Русские мультфильмы,Русские,Для детей',\n",
+       " 'Мультфильмы,Комедии,Детские,Союзмультфильм,Наши',\n",
+       " 'Драмы,Русские,Спорт',\n",
+       " 'Про животных,Западные мультфильмы,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Детективы,Боевики,Наши',\n",
+       " 'Советское кино,Фантастика,Мелодрамы,Русские,Для всей семьи,Музыкальные',\n",
+       " 'Сказки,Русские,Для всей семьи,Для детей',\n",
+       " 'Мистические,Ужасы,Советское кино,Драмы',\n",
+       " 'Мультфильмы,Приключения,Полнометражные,Детские,Зарубежные',\n",
+       " 'Русские мультфильмы,Про животных,Полнометражные,Русские,Для детей',\n",
+       " 'Военные,Триллеры,Драмы,Зарубежные',\n",
+       " 'Мультфильмы,Мультсериалы,Союзмультфильм',\n",
+       " 'Фильмы,Русские,Советские,Для детей',\n",
+       " 'Драмы,Мелодрамы,Зарубежные',\n",
+       " 'Детективы,Драмы',\n",
+       " 'Комедии,Триллеры,Боевики,Криминал',\n",
+       " 'Советские,Для детей,Для взрослых',\n",
+       " 'Западные мультфильмы,Сериалы,Для всей семьи,Для детей,Развивающие,Хочу всё знать,Зарубежные',\n",
+       " 'Комедии,Фантастика',\n",
+       " 'Военные,Приключения,Драмы,Мелодрамы,Боевики,Зарубежные,Биография',\n",
+       " 'Ужасы,Драмы,Фэнтези,Зарубежные',\n",
+       " 'Приключения,Детективы,Комедии,Боевики,Зарубежные',\n",
+       " 'Драмы',\n",
+       " 'Ужасы,Приключения,Зарубежные',\n",
+       " 'Фантастика',\n",
+       " 'Комедии,Фэнтези,Для всей семьи,Зарубежные',\n",
+       " 'Комедии,Триллеры,Криминал',\n",
+       " 'Детективы,Боевики,Зарубежные',\n",
+       " 'Приключения,Фантастика,Наши',\n",
+       " 'Детективы,Драмы,Русские',\n",
+       " 'Мультфильмы,Мультсериалы,Зарубежные',\n",
+       " 'Приключения,Про животных,Комедии,Фильмы,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Семейные,Наши',\n",
+       " 'Мультфильмы,Полнометражные,Детские,Союзмультфильм,Наши',\n",
+       " 'Про животных,Полнометражные,Западные мультфильмы,Для детей,Зарубежные',\n",
+       " 'Мелодрамы,Криминал,Спортивные',\n",
+       " 'Приключения,Триллеры,Фантастика,Зарубежные',\n",
+       " 'Семейные,Комедии',\n",
+       " 'Ужасы,Комедии,Триллеры,Зарубежные',\n",
+       " 'Полнометражные,Западные мультфильмы,Аниме,Зарубежные',\n",
+       " 'Детективы,Советское кино,Русские,Для всей семьи,Криминал',\n",
+       " 'Мультфильмы,Приключения,Комедии,Полнометражные,Детские,Зарубежные',\n",
+       " 'Приключения,Фантастика,Сериалы,Для всей семьи,Боевик,Зарубежные',\n",
+       " 'Приключения,Советское кино,Исторические,Русские,Для всей семьи,Музыкальные',\n",
+       " 'Военные,Триллеры,Драмы',\n",
+       " 'Приключения,Комедии,Советское кино,Фильмы,Фантастика,Для всей семьи,Для детей',\n",
+       " 'Мистические,Детективы,Триллеры,Романтические,Для всей семьи,Фантастические,Зарубежные',\n",
+       " 'Триллеры,Драмы,Боевики,Зарубежные',\n",
+       " 'Драмы,Документальные',\n",
+       " 'Познавательные,Русские,Для всей семьи',\n",
+       " 'Фантастика,Вестерн,Зарубежные',\n",
+       " 'Мистические,Детективы,Триллеры,Романтические,Фантастические,Зарубежные',\n",
+       " 'Кулинария',\n",
+       " 'Приключения,Русские,Для детей',\n",
+       " 'Ужасы,Фантастика,Боевики,Зарубежные',\n",
+       " 'Детективы,Комедии,Боевики',\n",
+       " 'Семейный,Приключение',\n",
+       " 'Ужасы,Комедии,Триллеры,Криминал',\n",
+       " 'Приключения,Драмы,Боевики,Криминал',\n",
+       " 'Приключения,Детективы,Комедии,Драмы,Фэнтези,Фантастика',\n",
+       " 'Триллеры,Драмы,Боевики,Криминал,Зарубежные',\n",
+       " 'Фантастика,Русские',\n",
+       " 'Военные,Драмы,Исторические,Русские,Боевики',\n",
+       " 'Мистические,Детективы,Мелодрамы,Русские',\n",
+       " 'Военные,Приключения,Триллеры,Драмы,Исторические,Боевики,Зарубежные',\n",
+       " 'Семейные,Приключения,Фантастика',\n",
+       " 'Исторические,Документальные',\n",
+       " 'Семейные,Комедии,Для детей',\n",
+       " 'Романтические,Русские',\n",
+       " 'Детективы,Комедии,Зарубежные',\n",
+       " 'Драмы,Фантастика,Зарубежные,Мюзиклы',\n",
+       " 'Приключения,Драмы,Мелодрамы,Арт-хаус,Зарубежные',\n",
+       " 'Драмы,Боевики',\n",
+       " 'Русские мультфильмы,Про животных,Русские,Сериалы,Для детей',\n",
+       " 'Зарубежные,Для самых маленьких',\n",
+       " 'Приключения,Фэнтези,Для всей семьи,Зарубежные',\n",
+       " 'Приключения,Зарубежные',\n",
+       " 'Детективы,Драмы,Русские,Боевики',\n",
+       " 'Комедии,Криминал,Зарубежные',\n",
+       " 'Приключения,Детективы,Боевики,Зарубежные',\n",
+       " 'Драмы,Полнометражные,Аниме',\n",
+       " 'Комедии,Триллеры,Фантастика,Боевики,Зарубежные',\n",
+       " 'Артхаус,Драмы,Исторические,Экранизации,Русские',\n",
+       " 'Комедии,Советское кино,Мелодрамы',\n",
+       " 'Комедии,Драмы,Криминал',\n",
+       " 'Советское кино,Фильмы,Фэнтези,Сказки,Русские,Для всей семьи,Для детей',\n",
+       " 'Комедии,Триллеры,Драмы,Мелодрамы,Боевики,Криминал',\n",
+       " 'Приключения,Комедии,Русские,Для всей семьи',\n",
+       " 'Военные,Комедии,Наши',\n",
+       " 'Ужасы,Фэнтези,Зарубежные',\n",
+       " 'Триллеры,Драмы,Зарубежные',\n",
+       " 'Эротика,Мелодрамы,Зарубежные',\n",
+       " 'Приключения,Драмы,Вестерн,Криминал,Зарубежные',\n",
+       " 'Детективы,Драмы,Мелодрамы,Русские',\n",
+       " 'Советское кино,Драмы,Экранизации,Мелодрамы',\n",
+       " 'Триллеры,Драмы,Боевики,Криминал',\n",
+       " 'Документальные,Зарубежные,Биография,Музыкальные',\n",
+       " 'Военные,Драмы,Исторические,Русские',\n",
+       " 'Триллеры,Фантастика',\n",
+       " 'Мистические,Ужасы,Фантастика,Зарубежные',\n",
+       " 'Мультфильмы,Для детей,Наши',\n",
+       " 'Семейные,Комедии,Криминал,Зарубежные',\n",
+       " 'Военные,Исторические,Русские,Документальные',\n",
+       " 'Ужасы,Боевик,Фэнтези, сказка,Комедия',\n",
+       " 'Эротика,Триллеры,Боевики,Зарубежные',\n",
+       " 'Мистические,Ужасы,Приключения,Мелодрамы,Зарубежные',\n",
+       " 'Мультфильмы,Мультсериалы,Для детей',\n",
+       " 'Ужасы,Детективы,Триллеры,Криминал',\n",
+       " 'Русские мультфильмы,Сериалы,Для всей семьи,Для детей,Развивающие,Хочу всё знать',\n",
+       " 'Детективы,Драмы,Фантастика,Наши',\n",
+       " 'Для всей семьи,Документальные',\n",
+       " 'Документальные',\n",
+       " 'Русские мультфильмы,Русские,Сериалы,Для детей,Развивающие,Хочу всё знать',\n",
+       " 'Мелодрамы,Наши',\n",
+       " 'Приключения,Про животных,Фэнтези,Западные мультфильмы,Сериалы,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Семейные,Комедии,Драмы,Мелодрамы,Зарубежные,Музыкальные',\n",
+       " 'Про животных,Полнометражные,Для детей,Зарубежные',\n",
+       " 'Комедии,Драмы,Мелодрамы',\n",
+       " 'Детективы,Драмы,Триллеры,Русские',\n",
+       " 'Приключения,Про животных,Комедии,Западные мультфильмы,Для всей семьи,Для детей,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Зарубежные',\n",
+       " 'Мультфильмы,Приключения,Зарубежные',\n",
+       " 'Приключения,Детективы,Драмы,Фэнтези,Мелодрамы,Боевики,Зарубежные',\n",
+       " 'Эротика,Мелодрамы',\n",
+       " 'Приключения,Советское кино,Драмы,Для всей семьи',\n",
+       " 'Русские мультфильмы,Русские,Для всей семьи,Для детей,Развивающие',\n",
+       " 'Семейные,Драмы,Зарубежные',\n",
+       " 'Приключения,Комедии,Фантастика,Боевики,Зарубежные',\n",
+       " 'Приключения,Комедии,Боевики,Зарубежные',\n",
+       " 'Детективы,Мелодрамы,Для всей семьи,Зарубежные',\n",
+       " 'Комедии,Детские',\n",
+       " 'Приключения,Комедии,Фантастика,Русские',\n",
+       " 'Комедии,Драмы,Зарубежные',\n",
+       " 'Артхаус,Мистические,Комедии,Триллеры,Зарубежные',\n",
+       " 'Русские,Боевики',\n",
+       " 'Семейные,Приключения,Зарубежные',\n",
+       " 'Полнометражные,Русские,Для детей',\n",
+       " 'Артхаус,Драмы,Русские,Для всей семьи',\n",
+       " 'Ужасы,Триллеры,Фантастика',\n",
+       " 'Детективы,Триллеры,Драмы,Мелодрамы,Криминал',\n",
+       " 'Комедии,Криминал,Зарубежные,Спорт',\n",
+       " 'Мультфильмы,Приключения,Полнометражные,Зарубежные',\n",
+       " 'Семейные,Фантастика,Мюзиклы',\n",
+       " 'Комедии,Для всей семьи,Боевики,Зарубежные',\n",
+       " 'Приключения,Военный,Русские,Для всей семьи',\n",
+       " 'Ужасы,Детективы,Комедии,Триллеры,Драмы',\n",
+       " 'Комедии,Мелодрамы,Наши',\n",
+       " 'Зарубежные',\n",
+       " 'Комедии,Триллеры,Боевики,Криминал,Зарубежные',\n",
+       " 'Музыкальные',\n",
+       " 'Наши,Музыкальные',\n",
+       " 'Триллеры,Драмы,Фантастика,Криминал,Зарубежные',\n",
+       " 'Военные,Драмы,Исторические,Биография',\n",
+       " 'Наши,Для самых маленьких',\n",
+       " 'Детективы,Триллеры,Мелодрамы',\n",
+       " 'Комедии,Русские',\n",
+       " 'Приключения,Триллеры,Фэнтези,Боевики,Зарубежные',\n",
+       " 'Приключения,Фэнтези,Мелодрамы,Боевики,Зарубежные',\n",
+       " 'Военные,Драмы,Исторические,Боевики',\n",
+       " 'Эротика,Драмы',\n",
+       " 'Детективы,Триллеры,Боевики,Криминал,Зарубежные',\n",
+       " 'Драмы,Триллеры,Русские',\n",
+       " 'Триллеры,Боевики,Криминал,Зарубежные',\n",
+       " 'Семейные,Комедии,Мелодрамы,Наши',\n",
+       " 'Мультфильмы,Приключения,Мультсериалы,Детские,Зарубежные',\n",
+       " 'Русские мультфильмы,Про животных,Русские,Советские,Для детей',\n",
+       " 'Приключения,Драмы,Фантастика,Мелодрамы,Боевики,Зарубежные',\n",
+       " 'Драмы,Фэнтези,Боевики,Зарубежные',\n",
+       " 'Приключения,Комедии,Фильмы,Фантастика,Для всей семьи,Боевики,Зарубежные',\n",
+       " 'Комедии,Драмы,Русские,Фильмы-спектакли',\n",
+       " 'Детективы,Триллеры,Драмы',\n",
+       " 'Исторические,Документальные,Спортивные',\n",
+       " 'Приключения,Комедии,Фантастика',\n",
+       " 'Советское кино,Русские,Боевики,Криминал',\n",
+       " 'Приключения,Фантастика,Боевики,Зарубежные',\n",
+       " 'Ужасы,Триллеры,Драмы,Боевики,Зарубежные',\n",
+       " 'Приключения,Драмы,Исторические',\n",
+       " 'Приключения,Исторические,Документальные',\n",
+       " 'Комедии,Советское кино,Экранизации,Мелодрамы,Для всей семьи',\n",
+       " 'Ужасы,Триллеры,Мелодрамы',\n",
+       " 'Западные мультфильмы,Сериалы,Для всей семьи,Для детей,Развивающие,Зарубежные',\n",
+       " ...]"
+      ]
+     },
+     "execution_count": 151,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "genres = list(set(genres))\n",
+    "genres.remove(None)\n",
+    "genres"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 152,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "genr = set()\n",
+    "for i in genres:\n",
+    "    for j in i.split(','):\n",
+    "        genr.add(j)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 154,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+------------------------------------------------------------+------+\n",
+      "|genres                                                      |count |\n",
+      "+------------------------------------------------------------+------+\n",
+      "|General                                                     |631864|\n",
+      "|Ужасы,Триллеры,Зарубежные                                   |79    |\n",
+      "|Мультфильмы,Детские,Союзмультфильм,Наши                     |72    |\n",
+      "|Комедии,Зарубежные                                          |66    |\n",
+      "|Эротика,Зарубежные                                          |58    |\n",
+      "|Комедии,Наши                                                |53    |\n",
+      "|Эротика                                                     |52    |\n",
+      "|Комедии,Драмы,Зарубежные                                    |50    |\n",
+      "|Драмы,Зарубежные                                            |48    |\n",
+      "|Триллеры,Драмы,Зарубежные                                   |46    |\n",
+      "|Ужасы,Зарубежные                                            |45    |\n",
+      "|Комедии,Мелодрамы,Зарубежные                                |44    |\n",
+      "|Триллеры,Боевики,Зарубежные                                 |41    |\n",
+      "|Комедии                                                     |41    |\n",
+      "|Комедии,Русские                                             |37    |\n",
+      "|Русские мультфильмы,Про животных,Русские,Советские,Для детей|35    |\n",
+      "|Драмы,Мелодрамы,Зарубежные                                  |34    |\n",
+      "|null                                                        |33    |\n",
+      "|Документальные,Зарубежные                                   |31    |\n",
+      "|Фантастика,Боевики,Зарубежные                               |27    |\n",
+      "+------------------------------------------------------------+------+\n",
+      "only showing top 20 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_items.groupBy('genres').count().sort(desc('count')).show(truncate=False)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 155,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "data_items = data_items.select('*', when((col('genres').contains(\"Сказки\")) | (col('genres').contains(\"сказка\")), 1).otherwise(0).alias('fairy_tale'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Анимация\"), 1).otherwise(0).alias('animation'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Арт\"), 1).otherwise(0).alias('art_house'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Аниме\"), 1).otherwise(0).alias('anime'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Биография\"), 1).otherwise(0).alias('biography'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Боевик\"), 1).otherwise(0).alias('action_movie'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Вестерн\"), 1).otherwise(0).alias('western'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Видеоигры\"), 1).otherwise(0).alias('video_game'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Игры\"), 1).otherwise(0).alias('games'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Военны\"), 1).otherwise(0).alias('military'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Детективы\"), 1).otherwise(0).alias('detective'))\n",
+    "data_items = data_items.select('*', when((col('genres').contains(\"Семейны\")) | (col('genres').contains(\"Для всей семьи\")), 1).otherwise(0).alias('family'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Для взрослых\"), 1).otherwise(0).alias('adults'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Эротика\"), 1).otherwise(0).alias('erotica'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Развлекательные\"), 1).otherwise(0).alias('entertainment'))\n",
+    "data_items = data_items.select('*', when((col('genres').contains(\"Наши\")) | (col('genres').contains(\"Русские\")), 1).otherwise(0).alias('our'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Зарубежные\"), 1).otherwise(0).alias('foreign'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Криминал\"), 1).otherwise(0).alias('crime'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Комеди\"), 1).otherwise(0).alias('comedy'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Драм\"), 1).otherwise(0).alias('drama'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Мультфильм\"), 1).otherwise(0).alias('cartoon'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Приключени\"), 1).otherwise(0).alias('adventure'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"General\"), 1).otherwise(0).alias('general'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Исторически\"), 1).otherwise(0).alias('history'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Советские\"), 1).otherwise(0).alias('ussr'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Триллер\"), 1).otherwise(0).alias('thriller'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Ужасы\"), 1).otherwise(0).alias('horror'))\n",
+    "data_items = data_items.select('*', when((col('genres').contains(\"Мистические\")), 1).otherwise(0).alias('mystical'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Фантасти\"), 1).otherwise(0).alias('fantastic'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Короткометр\"), 1).otherwise(0).alias('short_film'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Полнометражные\"), 1).otherwise(0).alias('full_length'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Музыкальн\"), 1).otherwise(0).alias('music'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Спорт\"), 1).otherwise(0).alias('sports'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Мелодрам\"), 1).otherwise(0).alias('melodrama'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Сериалы\"), 1).otherwise(0).alias('serials'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Экранизации\"), 1).otherwise(0).alias('film_adaptations'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Романтические\"), 1).otherwise(0).alias('romantic'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Развивающие\"), 1).otherwise(0).alias('developing'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Хочу всё знать\"), 1).otherwise(0).alias('want_know'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Познавательные\"), 1).otherwise(0).alias('educational'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Советское кино\"), 1).otherwise(0).alias('ussr_movie'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Документальны\"), 1).otherwise(0).alias('documentary'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Кулинария\"), 1).otherwise(0).alias('cooking'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"О здоровье\"), 1).otherwise(0).alias('health'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Прочие\"), 1).otherwise(0).alias('other'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Про животных\"), 1).otherwise(0).alias('animal'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Мюзиклы\"), 1).otherwise(0).alias('musical'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Охота и рыбалка\"), 1).otherwise(0).alias('hunting'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Передачи\"), 1).otherwise(0).alias('broadcast'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Научная фантастика\"), 1).otherwise(0).alias('nauchpop'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Юмористические\"), 1).otherwise(0).alias('humorous'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Реалити-шоу\"), 1).otherwise(0).alias('reality_show'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Западные мультфильмы\"), 1).otherwise(0).alias('western cartoons'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Союзмультфильм\"), 1).otherwise(0).alias('union cartoons'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Мультсериалы\"), 1).otherwise(0).alias('animated_series'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Фэнтези\"), 1).otherwise(0).alias('fantasy'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Для самых маленьких\"), 1).otherwise(0).alias('small'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Фильмы\"), 1).otherwise(0).alias('movie'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Русские мультфильмы\"), 1).otherwise(0).alias('russian_cartoon'))\n",
+    "data_items = data_items.select('*', when(col('genres').contains(\"Фильмы-спектакли\"), 1).otherwise(0).alias('films_performances'))\n",
+    "data_items = data_items.select('*', when((col('genres').contains(\"Детские\")) | (col('genres').contains(\"Для детей\")), 1).otherwise(0).alias('childish'))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 156,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+----------+---------------------------+--------------------------+-------------------+------------------+------------+--------------------+----+-------+---------+-------------+-------------------+--------------+----------+---------+---------+-----+---------+------------+-------+----------+-----+--------+---------+------+------+-------+-------------+---+-------+-----+------+-----+-------+---------+-------+-------+----+--------+------+--------+---------+----------+-----------+-----+------+---------+-------+----------------+--------+----------+---------+-----------+----------+-----------+-------+------+-----+------+-------+-------+---------+--------+--------+------------+----------------+--------------+---------------+-------+-----+-----+---------------+------------------+--------+\n",
+      "|item_id|channel_id|datetime_availability_start|datetime_availability_stop|datetime_show_start|datetime_show_stop|content_type|               title|year| genres|region_id|datetime_stop| datetime_stop_norm|datetime_start|fairy_tale|animation|art_house|anime|biography|action_movie|western|video_game|games|military|detective|family|adults|erotica|entertainment|our|foreign|crime|comedy|drama|cartoon|adventure|general|history|ussr|thriller|horror|mystical|fantastic|short_film|full_length|music|sports|melodrama|serials|film_adaptations|romantic|developing|want_know|educational|ussr_movie|documentary|cooking|health|other|animal|musical|hunting|broadcast|nauchpop|humorous|reality_show|western cartoons|union cartoons|animated_series|fantasy|small|movie|russian_cartoon|films_performances|childish|\n",
+      "+-------+----------+---------------------------+--------------------------+-------------------+------------------+------------+--------------------+----+-------+---------+-------------+-------------------+--------------+----------+---------+---------+-----+---------+------------+-------+----------+-----+--------+---------+------+------+-------+-------------+---+-------+-----+------+-----+-------+---------+-------+-------+----+--------+------+--------+---------+----------+-----------+-----+------+---------+-------+----------------+--------+----------+---------+-----------+----------+-----------+-------+------+-----+------+-------+-------+---------+--------+--------+------------+----------------+--------------+---------------+-------+-----+-----+---------------+------------------+--------+\n",
+      "|  65667|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|на пробах только ...|2013|Эротика|        0|       1263.0|0.03234977716305517|             0|         0|        0|        0|    0|        0|           0|      0|         0|    0|       0|        0|     0|     0|      1|            0|  0|      0|    0|     0|    0|      0|        0|      0|      0|   0|       0|     0|       0|        0|         0|          0|    0|     0|        0|      0|               0|       0|         0|        0|          0|         0|          0|      0|     0|    0|     0|      0|      0|        0|       0|       0|           0|               0|             0|              0|      0|    0|    0|              0|                 0|       0|\n",
+      "|  65669|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|скуби ду: эротиче...|2011|Эротика|        0|       1263.0|0.03234977716305517|             0|         0|        0|        0|    0|        0|           0|      0|         0|    0|       0|        0|     0|     0|      1|            0|  0|      0|    0|     0|    0|      0|        0|      0|      0|   0|       0|     0|       0|        0|         0|          0|    0|     0|        0|      0|               0|       0|         0|        0|          0|         0|          0|      0|     0|    0|     0|      0|      0|        0|       0|       0|           0|               0|             0|              0|      0|    0|    0|              0|                 0|       0|\n",
+      "|  65668|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|горячие девочки д...|2011|Эротика|        0|       1263.0|0.03234977716305517|             0|         0|        0|        0|    0|        0|           0|      0|         0|    0|       0|        0|     0|     0|      1|            0|  0|      0|    0|     0|    0|      0|        0|      0|      0|   0|       0|     0|       0|        0|         0|          0|    0|     0|        0|      0|               0|       0|         0|        0|          0|         0|          0|      0|     0|    0|     0|      0|      0|        0|       0|       0|           0|               0|             0|              0|      0|    0|    0|              0|                 0|       0|\n",
+      "|  65671|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|соблазнительницы ...|2011|Эротика|        0|       1263.0|0.03234977716305517|             0|         0|        0|        0|    0|        0|           0|      0|         0|    0|       0|        0|     0|     0|      1|            0|  0|      0|    0|     0|    0|      0|        0|      0|      0|   0|       0|     0|       0|        0|         0|          0|    0|     0|        0|      0|               0|       0|         0|        0|          0|         0|          0|      0|     0|    0|     0|      0|      0|        0|       0|       0|           0|               0|             0|              0|      0|    0|    0|              0|                 0|       0|\n",
+      "|  65670|         0|       1970-01-01T00:00:00Z|      2018-01-01T00:00:00Z|               null|              null|           1|секретные секс-ма...|2010|Эротика|        0|       1263.0|0.03234977716305517|             0|         0|        0|        0|    0|        0|           0|      0|         0|    0|       0|        0|     0|     0|      1|            0|  0|      0|    0|     0|    0|      0|        0|      0|      0|   0|       0|     0|       0|        0|         0|          0|    0|     0|        0|      0|               0|       0|         0|        0|          0|         0|          0|      0|     0|    0|     0|      0|      0|        0|       0|       0|           0|               0|             0|              0|      0|    0|    0|              0|                 0|       0|\n",
+      "+-------+----------+---------------------------+--------------------------+-------------------+------------------+------------+--------------------+----+-------+---------+-------------+-------------------+--------------+----------+---------+---------+-----+---------+------------+-------+----------+-----+--------+---------+------+------+-------+-------------+---+-------+-----+------+-----+-------+---------+-------+-------+----+--------+------+--------+---------+----------+-----------+-----+------+---------+-------+----------------+--------+----------+---------+-----------+----------+-----------+-------+------+-----+------+-------+-------+---------+--------+--------+------------+----------------+--------------+---------------+-------+-----+-----+---------------+------------------+--------+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_items.show(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 157,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "['item_id',\n",
+       " 'channel_id',\n",
+       " 'datetime_availability_start',\n",
+       " 'datetime_availability_stop',\n",
+       " 'datetime_show_start',\n",
+       " 'datetime_show_stop',\n",
+       " 'content_type',\n",
+       " 'title',\n",
+       " 'year',\n",
+       " 'genres',\n",
+       " 'region_id',\n",
+       " 'datetime_stop',\n",
+       " 'datetime_stop_norm',\n",
+       " 'datetime_start',\n",
+       " 'fairy_tale',\n",
+       " 'animation',\n",
+       " 'art_house',\n",
+       " 'anime',\n",
+       " 'biography',\n",
+       " 'action_movie',\n",
+       " 'western',\n",
+       " 'video_game',\n",
+       " 'games',\n",
+       " 'military',\n",
+       " 'detective',\n",
+       " 'family',\n",
+       " 'adults',\n",
+       " 'erotica',\n",
+       " 'entertainment',\n",
+       " 'our',\n",
+       " 'foreign',\n",
+       " 'crime',\n",
+       " 'comedy',\n",
+       " 'drama',\n",
+       " 'cartoon',\n",
+       " 'adventure',\n",
+       " 'general',\n",
+       " 'history',\n",
+       " 'ussr',\n",
+       " 'thriller',\n",
+       " 'horror',\n",
+       " 'mystical',\n",
+       " 'fantastic',\n",
+       " 'short_film',\n",
+       " 'full_length',\n",
+       " 'music',\n",
+       " 'sports',\n",
+       " 'melodrama',\n",
+       " 'serials',\n",
+       " 'film_adaptations',\n",
+       " 'romantic',\n",
+       " 'developing',\n",
+       " 'want_know',\n",
+       " 'educational',\n",
+       " 'ussr_movie',\n",
+       " 'documentary',\n",
+       " 'cooking',\n",
+       " 'health',\n",
+       " 'other',\n",
+       " 'animal',\n",
+       " 'musical',\n",
+       " 'hunting',\n",
+       " 'broadcast',\n",
+       " 'nauchpop',\n",
+       " 'humorous',\n",
+       " 'reality_show',\n",
+       " 'western cartoons',\n",
+       " 'union cartoons',\n",
+       " 'animated_series',\n",
+       " 'fantasy',\n",
+       " 'small',\n",
+       " 'movie',\n",
+       " 'russian_cartoon',\n",
+       " 'films_performances',\n",
+       " 'childish']"
+      ]
+     },
+     "execution_count": 157,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "data_items.columns"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 158,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "need_features = data_items.drop('channel_id', 'datetime_availability_start', 'datetime_availability_stop', 'datetime_show_start', \\\n",
+    "                        'datetime_show_stop', 'title', 'genres', 'region_id', 'datetime_stop').dropDuplicates(['item_id'])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 159,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "sample = data_train.sampleBy('purchase', fractions={0: 0.5, 1: 0.5}, seed=42).cache()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 161,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "data_train = data_train.join(sample.groupBy('user_id').mean('purchase').dropDuplicates(['user_id']).\\\n",
+    "                             select('user_id', col('avg(purchase)').alias('avg(purchase)_user')), on='user_id', how='left')\n",
+    "data_train = data_train.join(sample.groupBy('item_id').mean('purchase').dropDuplicates(['item_id']).\\\n",
+    "                             select('item_id', col('avg(purchase)').alias('avg(purchase)_item')), on='item_id', how='left')\n",
+    "\n",
+    "data_test = data_test.join(sample.groupBy('user_id').mean('purchase').dropDuplicates(['user_id']).\\\n",
+    "                           select('user_id', col('avg(purchase)').alias('avg(purchase)_user')), on='user_id', how='left')\n",
+    "data_test = data_test.join(sample.groupBy('item_id').mean('purchase').dropDuplicates(['item_id']).\\\n",
+    "                           select('item_id', col('avg(purchase)').alias('avg(purchase)_item')), on='item_id', how='left')\n",
+    "\n",
+    "data_train = data_train.na.fill(0)\n",
+    "data_test = data_test.na.fill(0)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 163,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+-------+--------+---------+--------------------+--------------------+\n",
+      "|item_id|user_id|purchase|item_type|  avg(purchase)_user|  avg(purchase)_item|\n",
+      "+-------+-------+--------+---------+--------------------+--------------------+\n",
+      "|    326|   1654|       0|        0|0.003276003276003276|0.001490312965722...|\n",
+      "|    326| 625638|       0|        0|0.003861003861003861|0.001490312965722...|\n",
+      "|    326| 746687|       0|        0|                 0.0|0.001490312965722...|\n",
+      "|    326| 751383|       0|        0|                 0.0|0.001490312965722...|\n",
+      "|    326| 766411|       0|        0|0.005507474429583...|0.001490312965722...|\n",
+      "+-------+-------+--------+---------+--------------------+--------------------+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_train.show(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 164,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+-------+---------+--------------------+--------------------+\n",
+      "|item_id|user_id|item_type|  avg(purchase)_user|  avg(purchase)_item|\n",
+      "+-------+-------+---------+--------------------+--------------------+\n",
+      "|    326| 747780|        0|                 0.0|0.001490312965722...|\n",
+      "|    326| 752784|        0|0.001547987616099...|0.001490312965722...|\n",
+      "|    326| 760146|        0|0.001492537313432...|0.001490312965722...|\n",
+      "|    326| 774191|        0|0.002396166134185...|0.001490312965722...|\n",
+      "|    326| 780033|        0|0.001563721657544957|0.001490312965722...|\n",
+      "+-------+-------+---------+--------------------+--------------------+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "data_test.show(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 165,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "data_train = data_train.join(need_features.select('*'), on='item_id', how='left')\n",
+    "data_train = data_train.na.fill(0)\n",
+    "\n",
+    "data_test = data_test.join(need_features.select('*'), on='item_id', how='left')\n",
+    "data_test = data_test.na.fill(0)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 166,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "train = data_train.sampleBy('purchase', fractions={0: 0.8, 1: 0.8}, seed=42).cache()\n",
+    "val = data_train.join(train, on=['user_id', 'item_id'], how='leftanti').cache()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 167,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "assembler = VectorAssembler(inputCols=data_train.drop('purchase').columns, outputCol=\"features\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 168,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [],
+   "source": [
+    "dataset = assembler.transform(train)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 169,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+-------+--------+---------+--------------------+--------------------+------------+----+------------------+--------------+----------+---------+---------+-----+---------+------------+-------+----------+-----+--------+---------+------+------+-------+-------------+---+-------+-----+------+-----+-------+---------+-------+-------+----+--------+------+--------+---------+----------+-----------+-----+------+---------+-------+----------------+--------+----------+---------+-----------+----------+-----------+-------+------+-----+------+-------+-------+---------+--------+--------+------------+----------------+--------------+---------------+-------+-----+-----+---------------+------------------+--------+--------------------+\n",
+      "|item_id|user_id|purchase|item_type|  avg(purchase)_user|  avg(purchase)_item|content_type|year|datetime_stop_norm|datetime_start|fairy_tale|animation|art_house|anime|biography|action_movie|western|video_game|games|military|detective|family|adults|erotica|entertainment|our|foreign|crime|comedy|drama|cartoon|adventure|general|history|ussr|thriller|horror|mystical|fantastic|short_film|full_length|music|sports|melodrama|serials|film_adaptations|romantic|developing|want_know|educational|ussr_movie|documentary|cooking|health|other|animal|musical|hunting|broadcast|nauchpop|humorous|reality_show|western cartoons|union cartoons|animated_series|fantasy|small|movie|russian_cartoon|films_performances|childish|            features|\n",
+      "+-------+-------+--------+---------+--------------------+--------------------+------------+----+------------------+--------------+----------+---------+---------+-----+---------+------------+-------+----------+-----+--------+---------+------+------+-------+-------------+---+-------+-----+------+-----+-------+---------+-------+-------+----+--------+------+--------+---------+----------+-----------+-----+------+---------+-------+----------------+--------+----------+---------+-----------+----------+-----------+-------+------+-----+------+-------+-------+---------+--------+--------+------------+----------------+--------------+---------------+-------+-----+-----+---------------+------------------+--------+--------------------+\n",
+      "|    326| 566758|       0|        0|                 0.0|0.001490312965722...|           1|2012|               0.0|             0|         0|        0|        0|    0|        0|           0|      0|         0|    0|       0|        0|     0|     0|      0|            0|  0|      1|    0|     0|    1|      0|        0|      0|      0|   0|       1|     1|       0|        1|         0|          0|    0|     0|        0|      0|               0|       0|         0|        0|          0|         0|          0|      0|     0|    0|     0|      0|      0|        0|       0|       0|           0|               0|             0|              0|      0|    0|    0|              0|                 0|       0|(70,[0,1,4,5,6,25...|\n",
+      "|    326| 748433|       0|        0|                 0.0|0.001490312965722...|           1|2012|               0.0|             0|         0|        0|        0|    0|        0|           0|      0|         0|    0|       0|        0|     0|     0|      0|            0|  0|      1|    0|     0|    1|      0|        0|      0|      0|   0|       1|     1|       0|        1|         0|          0|    0|     0|        0|      0|               0|       0|         0|        0|          0|         0|          0|      0|     0|    0|     0|      0|      0|        0|       0|       0|           0|               0|             0|              0|      0|    0|    0|              0|                 0|       0|(70,[0,1,4,5,6,25...|\n",
+      "|    326| 749587|       0|        0|0.019936204146730464|0.001490312965722...|           1|2012|               0.0|             0|         0|        0|        0|    0|        0|           0|      0|         0|    0|       0|        0|     0|     0|      0|            0|  0|      1|    0|     0|    1|      0|        0|      0|      0|   0|       1|     1|       0|        1|         0|          0|    0|     0|        0|      0|               0|       0|         0|        0|          0|         0|          0|      0|     0|    0|     0|      0|      0|        0|       0|       0|           0|               0|             0|              0|      0|    0|    0|              0|                 0|       0|(70,[0,1,3,4,5,6,...|\n",
+      "|    326| 752360|       0|        0|                 0.0|0.001490312965722...|           1|2012|               0.0|             0|         0|        0|        0|    0|        0|           0|      0|         0|    0|       0|        0|     0|     0|      0|            0|  0|      1|    0|     0|    1|      0|        0|      0|      0|   0|       1|     1|       0|        1|         0|          0|    0|     0|        0|      0|               0|       0|         0|        0|          0|         0|          0|      0|     0|    0|     0|      0|      0|        0|       0|       0|           0|               0|             0|              0|      0|    0|    0|              0|                 0|       0|(70,[0,1,4,5,6,25...|\n",
+      "|    326| 785694|       0|        0|7.886435331230284E-4|0.001490312965722...|           1|2012|               0.0|             0|         0|        0|        0|    0|        0|           0|      0|         0|    0|       0|        0|     0|     0|      0|            0|  0|      1|    0|     0|    1|      0|        0|      0|      0|   0|       1|     1|       0|        1|         0|          0|    0|     0|        0|      0|               0|       0|         0|        0|          0|         0|          0|      0|     0|    0|     0|      0|      0|        0|       0|       0|           0|               0|             0|              0|      0|    0|    0|              0|                 0|       0|(70,[0,1,3,4,5,6,...|\n",
+      "+-------+-------+--------+---------+--------------------+--------------------+------------+----+------------------+--------------+----------+---------+---------+-----+---------+------------+-------+----------+-----+--------+---------+------+------+-------+-------------+---+-------+-----+------+-----+-------+---------+-------+-------+----+--------+------+--------+---------+----------+-----------+-----+------+---------+-------+----------------+--------+----------+---------+-----------+----------+-----------+-------+------+-----+------+-------+-------+---------+--------+--------+------------+----------------+--------------+---------------+-------+-----+-----+---------------+------------------+--------+--------------------+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "dataset.show(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 170,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [],
+   "source": [
+    "gbt = GBTClassifier(featuresCol='features', labelCol='purchase', maxIter=100, maxDepth=10)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 171,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [],
+   "source": [
+    "model = gbt.fit(dataset)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 172,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "val_vector = assembler.transform(val)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 173,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [],
+   "source": [
+    "valid = model.transform(val_vector)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 174,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+-------+--------+---------+--------------------+--------------------+------------+----+------------------+--------------+----------+---------+---------+-----+---------+------------+-------+----------+-----+--------+---------+------+------+-------+-------------+---+-------+-----+------+-----+-------+---------+-------+-------+----+--------+------+--------+---------+----------+-----------+-----+------+---------+-------+----------------+--------+----------+---------+-----------+----------+-----------+-------+------+-----+------+-------+-------+---------+--------+--------+------------+----------------+--------------+---------------+-------+-----+-----+---------------+------------------+--------+--------------------+--------------------+--------------------+----------+\n",
+      "|user_id|item_id|purchase|item_type|  avg(purchase)_user|  avg(purchase)_item|content_type|year|datetime_stop_norm|datetime_start|fairy_tale|animation|art_house|anime|biography|action_movie|western|video_game|games|military|detective|family|adults|erotica|entertainment|our|foreign|crime|comedy|drama|cartoon|adventure|general|history|ussr|thriller|horror|mystical|fantastic|short_film|full_length|music|sports|melodrama|serials|film_adaptations|romantic|developing|want_know|educational|ussr_movie|documentary|cooking|health|other|animal|musical|hunting|broadcast|nauchpop|humorous|reality_show|western cartoons|union cartoons|animated_series|fantasy|small|movie|russian_cartoon|films_performances|childish|            features|       rawPrediction|         probability|prediction|\n",
+      "+-------+-------+--------+---------+--------------------+--------------------+------------+----+------------------+--------------+----------+---------+---------+-----+---------+------------+-------+----------+-----+--------+---------+------+------+-------+-------------+---+-------+-----+------+-----+-------+---------+-------+-------+----+--------+------+--------+---------+----------+-----------+-----+------+---------+-------+----------------+--------+----------+---------+-----------+----------+-----------+-------+------+-----+------+-------+-------+---------+--------+--------+------------+----------------+--------------+---------------+-------+-----+-----+---------------+------------------+--------+--------------------+--------------------+--------------------+----------+\n",
+      "|   1654|   3692|       0|        0|0.003314001657000...|                 0.0|           1|2008|               0.0|             0|         0|        0|        0|    0|        0|           1|      0|         0|    0|       0|        0|     0|     0|      0|            0|  0|      1|    1|     0|    1|      0|        0|      0|      0|   0|       1|     0|       0|        0|         0|          0|    0|     0|        0|      0|               0|       0|         0|        0|          0|         0|          0|      0|     0|    0|     0|      0|      0|        0|       0|       0|           0|               0|             0|              0|      0|    0|    0|              0|                 0|       0|(70,[0,1,3,5,6,14...|[2.20837948530902...|[0.98807072682134...|       0.0|\n",
+      "|   1654|   7569|       0|        0|0.003314001657000...|0.002915451895043...|           1|1969|               0.0|             0|         0|        0|        0|    0|        0|           0|      0|         0|    0|       0|        0|     0|     0|      0|            0|  1|      0|    0|     0|    0|      1|        0|      0|      0|   0|       0|     0|       0|        0|         0|          0|    0|     0|        0|      0|               0|       0|         0|        0|          0|         0|          0|      0|     0|    0|     0|      0|      0|        0|       0|       0|           0|               0|             1|              0|      0|    0|    0|              0|                 0|       1|(70,[0,1,3,4,5,6,...|[2.14449019120679...|[0.98646675511070...|       0.0|\n",
+      "|   1654|   9708|       0|        0|0.003314001657000...|0.009077155824508321|           1|2012|               0.0|             0|         0|        0|        0|    0|        0|           0|      0|         0|    0|       0|        0|     0|     0|      0|            0|  1|      0|    0|     0|    0|      1|        0|      0|      0|   0|       0|     0|       0|        0|         0|          0|    0|     0|        0|      0|               0|       0|         0|        0|          0|         0|          0|      0|     0|    0|     0|      0|      0|        0|       0|       0|           0|               0|             0|              1|      0|    0|    0|              0|                 0|       1|(70,[0,1,3,4,5,6,...|[1.92675306903028...|[0.97923506833289...|       0.0|\n",
+      "|   1654|   9758|       0|        0|0.003314001657000...|0.012893982808022923|           1|2015|               0.0|             0|         0|        0|        0|    0|        0|           0|      0|         0|    0|       0|        0|     0|     0|      0|            0|  0|      1|    0|     1|    0|      0|        1|      0|      0|   0|       0|     0|       0|        0|         0|          0|    0|     0|        0|      0|               0|       0|         0|        0|          0|         0|          0|      0|     0|    0|     0|      0|      0|        0|       0|       0|           0|               0|             0|              0|      0|    0|    0|              0|                 0|       0|(70,[0,1,3,4,5,6,...|[1.89927816919178...|[0.97808780978726...|       0.0|\n",
+      "|   1654|  10303|       0|        0|0.003314001657000...|0.001406469760900...|           1|2015|               0.0|             0|         0|        0|        0|    0|        0|           0|      0|         0|    0|       0|        0|     0|     0|      0|            0|  1|      0|    0|     1|    0|      0|        0|      0|      0|   0|       0|     0|       0|        0|         0|          0|    0|     0|        0|      0|               0|       0|         0|        0|          0|         0|          0|      0|     0|    0|     0|      0|      0|        0|       0|       0|           0|               0|             0|              0|      0|    0|    0|              0|                 0|       0|(70,[0,1,3,4,5,6,...|[2.18952345641784...|[0.98761793561122...|       0.0|\n",
+      "+-------+-------+--------+---------+--------------------+--------------------+------------+----+------------------+--------------+----------+---------+---------+-----+---------+------------+-------+----------+-----+--------+---------+------+------+-------+-------------+---+-------+-----+------+-----+-------+---------+-------+-------+----+--------+------+--------+---------+----------+-----------+-----+------+---------+-------+----------------+--------+----------+---------+-----------+----------+-----------+-------+------+-----+------+-------+-------+---------+--------+--------+------------+----------------+--------------+---------------+-------+-----+-----+---------------+------------------+--------+--------------------+--------------------+--------------------+----------+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "valid.show(5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 175,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "evaluator = BinaryClassificationEvaluator(rawPredictionCol=\"probability\", labelCol=\"purchase\", metricName='areaUnderROC')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 176,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    },
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "0.921105151541694"
+      ]
+     },
+     "execution_count": 176,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "evaluator.evaluate(valid)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 177,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "SparseVector(70, {0: 0.1013, 1: 0.2727, 3: 0.1825, 4: 0.1407, 6: 0.0737, 7: 0.0192, 8: 0.0001, 9: 0.0013, 10: 0.0, 11: 0.0013, 12: 0.001, 13: 0.0032, 14: 0.0095, 15: 0.0027, 16: 0.0006, 17: 0.0003, 18: 0.0042, 19: 0.007, 20: 0.008, 21: 0.0023, 22: 0.0073, 23: 0.0004, 24: 0.0084, 25: 0.0107, 26: 0.0069, 27: 0.0114, 28: 0.0096, 29: 0.0071, 30: 0.01, 32: 0.0028, 33: 0.0016, 34: 0.0079, 35: 0.0085, 36: 0.0033, 37: 0.009, 38: 0.001, 39: 0.0086, 40: 0.0014, 41: 0.0016, 42: 0.0066, 43: 0.003, 44: 0.0003, 45: 0.0006, 46: 0.0011, 47: 0.0011, 48: 0.0005, 49: 0.0008, 50: 0.0046, 51: 0.0, 53: 0.0002, 54: 0.0028, 55: 0.0005, 56: 0.0002, 57: 0.0014, 58: 0.0, 59: 0.0003, 60: 0.001, 61: 0.0023, 62: 0.002, 63: 0.0044, 64: 0.0043, 65: 0.0031, 66: 0.0012, 67: 0.0023, 69: 0.0062})"
+      ]
+     },
+     "execution_count": 177,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "model.featureImportances"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 178,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "best_pred = udf(lambda s: s.values.item(1), FloatType())"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 179,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "out_vector = assembler.transform(data_test)\n",
+    "out_predict = model.transform(out_vector)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 180,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "out_predict = out_predict.withColumn('purchase', best_pred(col('probability')))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 181,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "+-------+-------+-----------+-----------------------------------------+\n",
+      "|user_id|item_id|purchase   |probability                              |\n",
+      "+-------+-------+-----------+-----------------------------------------+\n",
+      "|1654   |336    |0.011937511|[0.9880624890424398,0.011937510957560238]|\n",
+      "|1654   |678    |0.0119286  |[0.9880713997059982,0.011928600294001779]|\n",
+      "|1654   |691    |0.011951895|[0.9880481043477533,0.011951895652246747]|\n",
+      "|1654   |696    |0.012546711|[0.9874532891297846,0.012546710870215416]|\n",
+      "|1654   |763    |0.011951895|[0.9880481043477533,0.011951895652246747]|\n",
+      "+-------+-------+-----------+-----------------------------------------+\n",
+      "only showing top 5 rows\n",
+      "\n"
+     ]
+    }
+   ],
+   "source": [
+    "out_predict.select('user_id', 'item_id', 'purchase', 'probability').sort('user_id', 'item_id').show(5, truncate=False)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 182,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Count on predictions data:  2156840\n",
+      "Count on check data:  2156840\n"
+     ]
+    }
+   ],
+   "source": [
+    "print('Count on predictions data: ', out_predict.count())\n",
+    "print('Count on check data: ', data_test.count())"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 183,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "out_predict.select('user_id', 'item_id', 'purchase').sort('user_id', 'item_id').toPandas().to_csv('lab03.csv', sep=',', index=True)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "pycharm": {
+     "name": "#%%\n"
+    }
+   },
+   "outputs": [],
+   "source": [
+    "spark.stop()"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.6.5"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 2
+}
